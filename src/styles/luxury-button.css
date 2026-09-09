@@ -1,0 +1,166 @@
+/* ==========================================================================
+   LUXURY BUTTON INTERACTIONS
+   Multi-color animated conic gradient border + Pointer-aware magnetic hover
+   ========================================================================== */
+
+.btn-luxury {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--surface-dark);
+  color: var(--text-ivory);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-gold-subtle);
+  cursor: pointer;
+  outline: none;
+  overflow: hidden;
+  user-select: none;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 180ms ease,
+              border-color 180ms ease,
+              background-color 180ms ease;
+  z-index: 1;
+}
+
+/* Conic Gradient Animated Glow Pseudo-element */
+.btn-luxury::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--angle, 0deg) at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    var(--gold-antique) 0%,
+    var(--violet-amethyst) 25%,
+    var(--burgundy-royal) 50%,
+    rgba(255, 255, 255, 0.85) 70%,
+    var(--gold-antique) 100%
+  );
+  opacity: 0;
+  z-index: -2;
+  transition: opacity 220ms ease;
+}
+
+/* Inner Background Shield to keep core dark obsidian */
+.btn-luxury::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: var(--surface-elevated);
+  z-index: -1;
+  transition: background-color 180ms ease;
+}
+
+/* Hover state: Activate rotating conic glow */
+.btn-luxury:hover {
+  border-color: transparent;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6),
+              0 0 12px rgba(212, 175, 55, 0.25),
+              0 0 20px rgba(109, 63, 168, 0.18);
+  transform: translate(calc(var(--magnetic-x, 0) * 1px), calc(var(--magnetic-y, 0) * 1px));
+}
+
+.btn-luxury:hover::before {
+  opacity: 1;
+  animation: rotateConic 3.5s linear infinite;
+}
+
+.btn-luxury:hover::after {
+  background: var(--surface-card);
+}
+
+.btn-luxury:active {
+  transform: scale(0.98);
+}
+
+.btn-luxury:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Gold Primary Accent Variant */
+.btn-luxury-primary {
+  border-color: var(--gold-border);
+  color: var(--gold-light);
+}
+
+.btn-luxury-primary::after {
+  background: linear-gradient(180deg, #241A29 0%, #17111D 100%);
+}
+
+.btn-luxury-primary:hover::after {
+  background: linear-gradient(180deg, #2D1F34 0%, #1D1425 100%);
+}
+
+/* Subtle / Ghost Variant */
+.btn-luxury-ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+.btn-luxury-ghost::after {
+  background: transparent;
+}
+
+.btn-luxury-ghost:hover {
+  border-color: var(--border-gold-subtle);
+}
+
+.btn-luxury-ghost:hover::after {
+  background: var(--surface-elevated);
+}
+
+/* Small / Compact Button */
+.btn-luxury-sm {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  gap: 5px;
+}
+
+/* Icon-Only Button */
+.btn-luxury-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* Animation definition for spinning conic border */
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes rotateConic {
+  0% {
+    --angle: 0deg;
+  }
+  100% {
+    --angle: 360deg;
+  }
+}
+
+/* Accessibility: Respect Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .btn-luxury {
+    transition: none !important;
+  }
+  .btn-luxury:hover {
+    transform: none !important;
+  }
+  .btn-luxury:hover::before {
+    animation: none !important;
+    opacity: 0.4;
+    background: var(--gold-border-bright);
+  }
+}
