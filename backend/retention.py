@@ -92,9 +92,22 @@ class RetentionWorker:
             {"$set": {"updated_at": now, "expires_at": new_expiry}}
         )
 
-        # Update associated assets in DB
+        # Update associated assets in DB and storage manager
         assets_col = db_manager.get_collection("assets")
-        await assets_col.update_one(
+        cursor = assets_col.find({"project_id": project_id})
+        if hasattr(cursor, "__await__"):
+            cursor = await cursor
+        if hasattr(cursor, "to_list"):
+            asset_docs = await cursor.to_list(length=1000)
+        else:
+            asset_docs = list(cursor)
+
+        for doc in asset_docs:
+            aid = doc.get("object_id") or doc.get("asset_id") or doc.get("r2_key")
+            if aid:
+                storage_manager.update_object_expiration(aid, new_expiry)
+
+        await assets_col.update_many(
             {"project_id": project_id},
             {"$set": {"expires_at": new_expiry}}
         )

@@ -97,16 +97,23 @@ export class PDFParser {
         const fontSize = Math.max(Math.round(item.height * 1.5), 10);
         const fontWidth = Math.max(Math.round(item.width * 1.5), 20);
 
+        const bbox = {
+          x: Math.round(tx),
+          y: Math.max(Math.round(ty - fontSize), 0),
+          width: fontWidth,
+          height: fontSize + 4
+        };
+
         textNodes.push({
           id: `pdf_p${pageNum}_t${i}`,
           name: item.str.slice(0, 24),
           type: item.height > 18 ? 'heading' : 'text',
           parentId: null,
           childrenIds: [],
-          x: Math.round(tx),
-          y: Math.max(Math.round(ty - fontSize), 0),
-          width: fontWidth,
-          height: fontSize + 4,
+          x: bbox.x,
+          y: bbox.y,
+          width: bbox.width,
+          height: bbox.height,
           rotation: 0,
           opacity: 1,
           zIndex: 10 + i,
@@ -122,7 +129,18 @@ export class PDFParser {
           alignment: 'left',
           constraints: { mode: 'fixed' },
           confidence: 0.98,
-          source: 'pdf'
+          confidenceLabel: 'HIGH',
+          source: 'pdf',
+          sourceRegion: bbox,
+          confidenceSource: 'direct_pdf_stream',
+          evidence: {
+            pdfGlyphFont: item.fontName || 'Unknown',
+            scaleFactor: 1.5,
+            isVectorExtracted: true
+          },
+          detectionMethod: 'PDF.js vector glyph stream extraction',
+          reconstructionStatus: 'native',
+          limitations: []
         });
       }
 
@@ -147,6 +165,37 @@ export class PDFParser {
       safetyNotice,
       pages
     };
+  }
+
+  /**
+   * Reorders pages in the PDF document
+   */
+  static reorderPages(pages: PDFPageData[], fromIndex: number, toIndex: number): PDFPageData[] {
+    if (fromIndex < 0 || fromIndex >= pages.length || toIndex < 0 || toIndex >= pages.length) {
+      return pages;
+    }
+    const copy = [...pages];
+    const [moved] = copy.splice(fromIndex, 1);
+    copy.splice(toIndex, 0, moved);
+    return copy.map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
+  }
+
+  /**
+   * Deletes a page by index
+   */
+  static deletePage(pages: PDFPageData[], pageIndex: number): PDFPageData[] {
+    if (pages.length <= 1 || pageIndex < 0 || pageIndex >= pages.length) {
+      return pages;
+    }
+    return pages.filter((_, idx) => idx !== pageIndex).map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
+  }
+
+  /**
+   * Rotates a page by specified degrees (90, 180, 270)
+   */
+  static rotatePage(page: PDFPageData, degrees: 90 | 180 | 270): PDFPageData {
+    const newRot = ((page.rotation || 0) + degrees) % 360;
+    return { ...page, rotation: newRot };
   }
 
   /**
@@ -177,7 +226,13 @@ export class PDFParser {
       backgroundColor: '#FFFFFF',
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'pdf'
+      confidenceLabel: 'HIGH',
+      source: 'pdf',
+      sourceRegion: { x: 0, y: 0, width: page.width, height: page.height },
+      confidenceSource: 'direct_pdf_stream',
+      detectionMethod: 'PDF.js canvas rendering',
+      reconstructionStatus: 'flattened',
+      limitations: ['Non-text vector shapes, gradients, and lines flattened into raster background']
     };
     rootIds.push(bgId);
 

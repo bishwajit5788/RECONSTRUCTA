@@ -19,7 +19,8 @@ import {
   Shield,
   Menu,
   History,
-  Image as ImageIcon
+  Image as ImageIcon,
+  FileCheck2
 } from 'lucide-react';
 
 interface LuxuryHeaderProps {
@@ -28,6 +29,7 @@ interface LuxuryHeaderProps {
   onOpenCommandPalette: () => void;
   onOpenAssetGallery?: () => void;
   onOpenVersionHistory?: () => void;
+  onOpenCapabilityReport?: () => void;
   saveStatus?: string;
 }
 
@@ -37,6 +39,7 @@ export const LuxuryHeader: React.FC<LuxuryHeaderProps> = ({
   onOpenCommandPalette,
   onOpenAssetGallery,
   onOpenVersionHistory,
+  onOpenCapabilityReport,
   saveStatus = 'Saved'
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -202,6 +205,17 @@ export const LuxuryHeader: React.FC<LuxuryHeaderProps> = ({
             title="Version History & Checkpoints"
           >
             <History size={13} /> Versions
+          </LuxuryButton>
+        )}
+
+        {onOpenCapabilityReport && (
+          <LuxuryButton
+            size="sm"
+            variant="ghost"
+            onClick={onOpenCapabilityReport}
+            title="View Reconstruction Fidelity & Audit Report"
+          >
+            <FileCheck2 size={13} /> Fidelity
           </LuxuryButton>
         )}
 

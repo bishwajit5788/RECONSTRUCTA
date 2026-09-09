@@ -6,6 +6,7 @@ Cloudflare R2 temporary storage lifecycle, MongoDB Atlas project metadata,
 """
 
 import base64
+import hashlib
 import io
 import time
 import pytest
@@ -196,3 +197,90 @@ def test_two_hour_retention_purge():
     # Verify object is purged
     res_get = client.get(f"/api/files/{meta.object_id}")
     assert res_get.status_code == 404
+
+
+def test_readiness_probe():
+    """Verify /api/ready reports 200 when database and storage are available."""
+    response = client.get("/api/ready")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ready"
+    assert data["database_healthy"] is True
+    assert data["storage_healthy"] is True
+
+
+def test_x_request_id_and_observability():
+    """Verify X-Request-ID header is propagated and present on responses."""
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert "x-request-id" in response.headers
+    assert len(response.headers["x-request-id"]) > 10
+
+
+def test_magic_bytes_rejection():
+    """Verify spoofed or corrupted binaries are rejected with 400."""
+    corrupted_data = b"\x00\x01\x02\x03CORRUPTED_NON_MATCHING_BYTES"
+    files = {"file": ("malicious.exe", io.BytesIO(corrupted_data), "application/octet-stream")}
+    data = {"project_id": "test_security", "purpose": "uploads"}
+    response = client.post("/api/files/upload", files=files, data=data)
+    assert response.status_code == 400
+    assert "Invalid file signature" in response.json()["detail"]
+
+
+def test_zip_bomb_detection():
+    """Verify decompression bombs with abusive compression ratios are rejected."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # 1MB of zeroes compresses to a few hundred bytes (> 1000:1 ratio)
+        zf.writestr("huge_zeroes.txt", b"\x00" * (1024 * 1024))
+    zip_bytes = buf.getvalue()
+
+    files = {"file": ("malicious.docx", io.BytesIO(zip_bytes), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    data = {"project_id": "test_security", "purpose": "uploads"}
+    response = client.post("/api/files/upload", files=files, data=data)
+    assert response.status_code == 400
+    assert "File rejected" in response.json()["detail"]
+
+
+def test_restart_lifecycle_adversarial():
+    """
+    Mandatory production restart lifecycle test:
+    Upload -> Verify R2 & MongoDB state -> Simulate restart -> Download & Verify SHA256/TTL -> Delete -> Cleanup verify.
+    """
+    # 1. Prepare valid PNG payload with magic bytes
+    img = Image.new("RGB", (64, 64), (255, 100, 50))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+    expected_sha256 = hashlib.sha256(png_bytes).hexdigest()
+
+    # Upload
+    files = {"file": ("screen_snap.png", io.BytesIO(png_bytes), "image/png")}
+    data = {"project_id": "proj_restart_test", "purpose": "screenshots"}
+    res_upload = client.post("/api/files/upload", files=files, data=data)
+    assert res_upload.status_code == 200
+    upload_info = res_upload.json()
+    obj_id = upload_info["object_id"]
+    assert upload_info["sha256"] == expected_sha256
+
+    # 2. Simulate worker restart / fresh lookup from storage
+    # Verify file is retrievable with correct SHA256 and content
+    res_download = client.get(f"/api/files/{obj_id}")
+    assert res_download.status_code == 200
+    assert res_download.content == png_bytes
+    assert res_download.headers["x-sha256"] == expected_sha256
+
+    # 3. Touch project to extend retention
+    res_touch = client.post("/api/projects/proj_restart_test/touch")
+    assert res_touch.status_code == 200
+    new_expires = res_touch.json()["expires_at"]
+    assert new_expires > time.time()
+
+    # 4. Explicit deletion and cleanup verification
+    res_del = client.delete(f"/api/files/{obj_id}")
+    assert res_del.status_code == 200
+
+    # 5. Verify gone
+    res_gone = client.get(f"/api/files/{obj_id}")
+    assert res_gone.status_code == 404

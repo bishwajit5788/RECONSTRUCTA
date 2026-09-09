@@ -74,6 +74,10 @@ export interface LayoutConstraints {
   maxWidth?: number;
 }
 
+export type ConfidenceSource = 'tesseract' | 'heuristics' | 'direct_pdf_stream' | 'docx_xml' | 'eml_mime' | 'manual';
+
+export type ReconstructionStatus = 'native' | 'reconstructed' | 'approximated' | 'flattened';
+
 export interface SceneNode {
   id: string;
   name: string;
@@ -140,6 +144,15 @@ export interface SceneNode {
   confidenceLabel?: 'HIGH' | 'MEDIUM' | 'LOW';
   reviewRequired?: boolean;
   source: ElementSource;
+
+  // Source Traceability & Evidence (Honest Provenance)
+  sourceRegion?: BoundingBox;
+  confidenceSource?: ConfidenceSource;
+  evidence?: Record<string, number | string | boolean>;
+  detectionMethod?: string;
+  reconstructionStatus?: ReconstructionStatus;
+  limitations?: string[];
+
   customData?: Record<string, any>;
 }
 

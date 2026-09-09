@@ -30,7 +30,8 @@ class ProjectVersionModel(BaseModel):
 class AssetMetadataModel(BaseModel):
     object_id: str
     project_id: str
-    purpose: str = "upload"  # "upload" | "working" | "export"
+    r2_key: str = ""
+    purpose: str = "uploads"  # "uploads" | "working" | "exports"
     content_type: str
     size_bytes: int
     sha256: str
@@ -89,12 +90,14 @@ class InMemoryCollection:
                 return res
         return None
 
-    async def find(self, filter_query: Dict[str, Any] = None) -> Any:
+    def find(self, filter_query: Dict[str, Any] = None) -> Any:
         filter_query = filter_query or {}
         matches = [dict(d) for d in self.docs.values() if self._matches(d, filter_query)]
         class Cursor:
             def __init__(self, items):
                 self.items = items
+            def __iter__(self):
+                return iter(self.items)
             def __aiter__(self):
                 self._iter = iter(self.items)
                 return self
@@ -105,6 +108,10 @@ class InMemoryCollection:
                     raise StopAsyncIteration
             async def to_list(self, length: int = 100):
                 return self.items[:length]
+            def __await__(self):
+                async def _self():
+                    return self
+                return _self().__await__()
         return Cursor(matches)
 
     async def update_one(self, filter_query: Dict[str, Any], update_doc: Dict[str, Any], upsert: bool = False) -> Any:
@@ -129,6 +136,17 @@ class InMemoryCollection:
             modified_count = 0
             upserted_id = None
         return Res0()
+
+    async def update_many(self, filter_query: Dict[str, Any], update_doc: Dict[str, Any]) -> Any:
+        count = 0
+        for _id, doc in self.docs.items():
+            if self._matches(doc, filter_query):
+                if "$set" in update_doc:
+                    doc.update(update_doc["$set"])
+                count += 1
+        class Res:
+            modified_count = count
+        return Res()
 
     async def delete_one(self, filter_query: Dict[str, Any]) -> Any:
         for _id, doc in list(self.docs.items()):
@@ -173,18 +191,21 @@ class InMemoryCollection:
 
 
 class DatabaseManager:
-    """Manages MongoDB Atlas connection and collections with automatic TTL indices."""
+    """Manages MongoDB Atlas connection and collections with automatic TTL indices and fail-closed enforcement."""
 
     def __init__(self):
         self.client: Optional[Any] = None
         self.db: Optional[Any] = None
         self.is_connected: bool = False
-        self.is_fallback: bool = False
+        self.allow_local_dev: bool = os.environ.get("LOCAL_DEV_STORAGE", "true").lower() in ["true", "1", "yes"]
+        self.is_fallback: bool = self.allow_local_dev
+        self.is_healthy: bool = self.allow_local_dev
         self._memory_collections: Dict[str, InMemoryCollection] = {}
 
     async def initialize(self):
         mongodb_uri = os.environ.get("MONGODB_URI")
         db_name = os.environ.get("MONGODB_DATABASE", "reconstructa")
+        self.allow_local_dev = os.environ.get("LOCAL_DEV_STORAGE", "true").lower() in ["true", "1", "yes"]
 
         if mongodb_uri and MOTOR_AVAILABLE:
             try:
@@ -198,18 +219,30 @@ class DatabaseManager:
                 await self.client.admin.command("ping")
                 self.is_connected = True
                 self.is_fallback = False
+                self.is_healthy = True
                 await self._setup_ttl_indexes()
                 return
-            except Exception as err:
+            except Exception:
                 self.is_connected = False
+                self.is_healthy = False
+                if not self.allow_local_dev:
+                    self.is_fallback = False
+                    return
                 self.is_fallback = True
         else:
             self.is_connected = False
-            self.is_fallback = True
+            if not self.allow_local_dev:
+                self.is_healthy = False
+                self.is_fallback = False
+            else:
+                self.is_fallback = True
+                self.is_healthy = True
 
     def get_collection(self, name: str) -> Any:
         if self.is_connected and self.db is not None:
             return self.db[name]
+        if not self.allow_local_dev:
+            raise RuntimeError("Production Database Unavailable: MongoDB Atlas connection required.")
         if name not in self._memory_collections:
             self._memory_collections[name] = InMemoryCollection(name)
         return self._memory_collections[name]

@@ -8,12 +8,20 @@ import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { SceneGraph, SceneNode } from '../types/sceneGraph';
 
+export interface ElementFidelityClassification {
+  supported: string[];
+  partial: string[];
+  flattened: string[];
+  unsupported: string[];
+}
+
 export interface DocumentImportReport {
   status: 'success' | 'partial' | 'failed';
   paragraphsCount: number;
   headingsCount: number;
   tablesCount: number;
   imagesCount: number;
+  classification: ElementFidelityClassification;
   warnings: string[];
 }
 
@@ -57,11 +65,14 @@ export class DocxParser {
       mediaUrlMap[filename] = dataUrl;
     }
 
+    const hasVba = zip.file(/vbaProject\.bin/i).length > 0;
+    const hasDiagrams = zip.file(/diagrams/i).length > 0;
+
     // Check for security or unsupported proprietary elements
-    if (zip.file(/vbaProject\.bin/i).length > 0) {
+    if (hasVba) {
       warnings.push('VBA Macros detected and safely stripped for security.');
     }
-    if (zip.file(/diagrams/i).length > 0) {
+    if (hasDiagrams) {
       warnings.push('SmartArt diagrams flattened into basic shapes.');
     }
     if (tablesCount > 0) {
@@ -86,6 +97,7 @@ export class DocxParser {
       const imgNodeId = `docx_img_${imageIdx}`;
       const imgWidth = Math.min(canvasWidth - 96, 320);
       const imgHeight = 180;
+      const imgBounds = { x: 48, y: currentY, width: imgWidth, height: imgHeight };
 
       nodes[imgNodeId] = {
         id: imgNodeId,
@@ -93,10 +105,10 @@ export class DocxParser {
         type: 'image',
         parentId: null,
         childrenIds: [],
-        x: 48,
-        y: currentY,
-        width: imgWidth,
-        height: imgHeight,
+        x: imgBounds.x,
+        y: imgBounds.y,
+        width: imgBounds.width,
+        height: imgBounds.height,
         rotation: 0,
         opacity: 1,
         zIndex: 5 + imageIdx,
@@ -106,7 +118,17 @@ export class DocxParser {
         backgroundColor: '#1E1A24',
         constraints: { mode: 'fixed' },
         confidence: 0.95,
-        source: 'docx'
+        confidenceLabel: 'HIGH',
+        source: 'docx',
+        sourceRegion: imgBounds,
+        confidenceSource: 'docx_xml',
+        evidence: {
+          embeddedMediaPart: `word/media/${imgName}`,
+          isExtractedBinary: true
+        },
+        detectionMethod: 'OpenXML zip media stream extraction',
+        reconstructionStatus: 'native',
+        limitations: []
       };
       rootIds.push(imgNodeId);
       currentY += imgHeight + 20;
@@ -121,6 +143,7 @@ export class DocxParser {
       const nodeId = `docx_node_${i}`;
       const fontSize = isHeading ? 18 : 14;
       const height = isHeading ? 28 : 22;
+      const bbox = { x: 48, y: currentY, width: canvasWidth - 96, height };
 
       if (isHeading) headingsCount++;
       else paragraphsCount++;
@@ -131,10 +154,10 @@ export class DocxParser {
         type: isHeading ? 'heading' : 'text',
         parentId: null,
         childrenIds: [],
-        x: 48,
-        y: currentY,
-        width: canvasWidth - 96,
-        height,
+        x: bbox.x,
+        y: bbox.y,
+        width: bbox.width,
+        height: bbox.height,
         rotation: 0,
         opacity: 1,
         zIndex: 10 + i,
@@ -150,7 +173,18 @@ export class DocxParser {
         alignment: 'left',
         constraints: { mode: 'reflow' },
         confidence: 0.92,
-        source: 'docx'
+        confidenceLabel: 'HIGH',
+        source: 'docx',
+        sourceRegion: bbox,
+        confidenceSource: 'docx_xml',
+        evidence: {
+          isHeading,
+          length: line.length,
+          extractedVia: 'Mammoth + OpenXML XML DOM'
+        },
+        detectionMethod: 'Mammoth text run conversion',
+        reconstructionStatus: 'reconstructed',
+        limitations: []
       };
       rootIds.push(nodeId);
 
@@ -159,12 +193,20 @@ export class DocxParser {
 
     const totalHeight = Math.max(currentY + 60, 900);
 
+    const classification: ElementFidelityClassification = {
+      supported: ['Paragraphs', 'Headings', 'Embedded Media (PNG/JPEG/WebP)', 'Text Runs'],
+      partial: tablesCount > 0 ? [`${tablesCount} OpenXML Tables (rendered as structured text blocks)`] : [],
+      flattened: hasDiagrams ? ['SmartArt Diagrams (flattened into basic shapes)'] : [],
+      unsupported: hasVba ? ['VBA Macros (stripped for browser sandbox safety)'] : []
+    };
+
     const report: DocumentImportReport = {
       status: warnings.length > 0 ? 'partial' : 'success',
       paragraphsCount,
       headingsCount,
       tablesCount,
       imagesCount,
+      classification,
       warnings
     };
 

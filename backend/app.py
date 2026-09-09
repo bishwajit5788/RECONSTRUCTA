@@ -6,8 +6,11 @@ MongoDB Atlas metadata tracking, and strict 2-hour retention with automated back
 
 import base64
 import io
+import logging
 import os
 import time
+import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Dict, List, Literal, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -18,8 +21,18 @@ import cv2
 from PIL import Image
 
 from database import db_manager, ProjectMetadataModel, ProjectVersionModel, AssetMetadataModel
-from storage import storage_manager, StoredObjectMetadata, MAX_FILE_SIZE_BYTES
+from storage import (
+    storage_manager,
+    StoredObjectMetadata,
+    MAX_FILE_SIZE_BYTES,
+    validate_magic_bytes,
+    check_zip_bomb,
+    LOCAL_DEV_STORAGE
+)
 from retention import retention_worker, RETENTION_WINDOW_SECONDS
+
+logger = logging.getLogger("reconstructa.api")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 @asynccontextmanager
@@ -51,6 +64,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Sliding Window Rate Limiter (in-memory)
+_rate_limits: Dict[str, List[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60.0  # 1 minute
+RATE_LIMIT_MAX_REQUESTS = 180  # requests per minute per IP
+
+@app.middleware("http")
+async def observability_and_rate_limit_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    start_time = time.time()
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+    # Prune timestamps older than window
+    timestamps = [t for t in _rate_limits[client_ip] if now - t < RATE_LIMIT_WINDOW]
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        return Response(
+            content='{"detail":"Rate limit exceeded. Try again later."}',
+            status_code=429,
+            media_type="application/json",
+            headers={"X-Request-ID": req_id}
+        )
+    timestamps.append(now)
+    _rate_limits[client_ip] = timestamps
+
+    response = await call_next(request)
+    duration_ms = round((time.time() - start_time) * 1000, 2)
+    response.headers["X-Request-ID"] = req_id
+
+    # Safe log: never log payloads, params, or document text
+    logger.info(f"REQ {req_id} | {request.method} {request.url.path} -> {response.status_code} ({duration_ms}ms)")
+    return response
 
 
 class BoundingBoxModel(BaseModel):
@@ -194,6 +239,32 @@ async def health_check():
     }
 
 
+@app.get("/api/ready")
+async def readiness_check():
+    """Readiness probe verifying DB connectivity and storage availability."""
+    db_ok = db_manager.is_healthy
+    storage_ok = storage_manager.is_r2_active or LOCAL_DEV_STORAGE
+
+    if not db_ok or not storage_ok:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "degraded",
+                "database_healthy": db_ok,
+                "storage_healthy": storage_ok,
+                "local_dev_mode": LOCAL_DEV_STORAGE
+            }
+        )
+
+    return {
+        "status": "ready",
+        "database_healthy": True,
+        "storage_healthy": True,
+        "local_dev_mode": LOCAL_DEV_STORAGE,
+        "timestamp": time.time()
+    }
+
+
 @app.post("/api/inpaint", response_model=InpaintResponse)
 async def inpaint_region(req: InpaintRequest):
     """
@@ -217,6 +288,8 @@ async def inpaint_region(req: InpaintRequest):
         raise HTTPException(status_code=400, detail="Invalid image payload provided.")
 
     h, w, _ = img_bgr.shape
+    if h * w > 16_777_216:
+        raise HTTPException(status_code=400, detail="Image exceeds maximum allowable pixel dimensions (16MP).")
     bx = req.bounds.x
     by = req.bounds.y
     bw = req.bounds.width
@@ -284,7 +357,19 @@ async def upload_temporary_file(
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 50MB security limit.")
 
-    content_type = file.content_type or "application/octet-stream"
+    # Validate binary signature via magic bytes
+    is_valid_magic, detected_mime = validate_magic_bytes(file_bytes)
+    if not is_valid_magic:
+        raise HTTPException(status_code=400, detail="Invalid file signature or unsupported binary type.")
+
+    # Check for zip bomb / decompression attacks on zip-based formats
+    filename_lower = (file.filename or "").lower()
+    if detected_mime == "application/zip" or filename_lower.endswith((".docx", ".pptx", ".zip")):
+        is_safe_zip, reason = check_zip_bomb(file_bytes)
+        if not is_safe_zip:
+            raise HTTPException(status_code=400, detail=f"File rejected: {reason}")
+
+    content_type = detected_mime if detected_mime != "application/octet-stream" else (file.content_type or "application/octet-stream")
 
     # Store in R2 Temporary Bucket
     meta: StoredObjectMetadata = storage_manager.upload_file(

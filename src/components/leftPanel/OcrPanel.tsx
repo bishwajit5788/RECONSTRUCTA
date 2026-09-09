@@ -9,7 +9,7 @@ import { useEditorStore } from '../../store/useEditorStore';
 import { useHistoryStore } from '../../store/useHistoryStore';
 import { LuxuryButton } from '../common/LuxuryButton';
 import { ConfidenceEngine } from '../../engine/vision/confidenceEngine';
-import { AlertTriangle, CheckCircle, Split, Merge, PlusCircle, Trash2, Lock, Unlock } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Split, Merge, PlusCircle, Trash2, Lock, Unlock, Layers } from 'lucide-react';
 import { ElementType, SceneNode } from '../../types/sceneGraph';
 
 const ALL_ELEMENT_TYPES: ElementType[] = [
@@ -39,8 +39,17 @@ export const OcrPanel: React.FC = () => {
   const { sceneGraph, selectedNodeIds, updateNode, addNode, deleteNodes, setSelectedNodes } = useEditorStore();
   const { pushState } = useHistoryStore();
 
+  const [filterTab, setFilterTab] = React.useState<'all' | 'needs_review' | 'verified'>('all');
+
   const reviewItems = ConfidenceEngine.evaluateSceneGraph(sceneGraph.nodes);
   const lowConfidenceCount = reviewItems.filter((i) => i.isLowConfidence).length;
+  const verifiedCount = reviewItems.filter((i) => !i.isLowConfidence).length;
+
+  const filteredItems = reviewItems.filter((item) => {
+    if (filterTab === 'needs_review') return item.isLowConfidence;
+    if (filterTab === 'verified') return !item.isLowConfidence;
+    return true;
+  });
 
   const selectedNodes = selectedNodeIds.map((id) => sceneGraph.nodes[id]).filter(Boolean);
 
@@ -82,6 +91,26 @@ export const OcrPanel: React.FC = () => {
     updateNode(nodeId, { confidence: 1.0, confidenceLabel: 'HIGH', reviewRequired: false, source: 'manual' });
   };
 
+  const handleAcceptAllHighConfidence = () => {
+    pushState(sceneGraph);
+    for (const item of reviewItems) {
+      if (item.confidence >= 0.8) {
+        updateNode(item.nodeId, { reviewRequired: false, confidenceLabel: 'HIGH' });
+      }
+    }
+  };
+
+  const handleDemoteToBackground = (nodeId: string) => {
+    pushState(sceneGraph);
+    updateNode(nodeId, {
+      type: 'background',
+      zIndex: 1,
+      locked: true,
+      reconstructionStatus: 'flattened',
+      limitations: ['Demoted to static background plane']
+    });
+  };
+
   const handleRejectNode = (nodeId: string) => {
     pushState(sceneGraph);
     deleteNodes([nodeId]);
@@ -98,7 +127,7 @@ export const OcrPanel: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
       {/* Confidence Header Overview */}
       <div
         style={{
@@ -119,7 +148,7 @@ export const OcrPanel: React.FC = () => {
               color: lowConfidenceCount > 0 ? 'var(--status-warning)' : 'var(--status-success)'
             }}
           >
-            {lowConfidenceCount > 0 ? `${lowConfidenceCount} Needs Review` : 'High Confidence'}
+            {lowConfidenceCount > 0 ? `${lowConfidenceCount} Needs Review` : 'All Verified'}
           </span>
         </div>
 
@@ -133,13 +162,63 @@ export const OcrPanel: React.FC = () => {
               color: 'var(--status-warning)',
               background: 'rgba(218, 165, 32, 0.1)',
               padding: '6px 8px',
-              borderRadius: 4
+              borderRadius: 4,
+              marginBottom: 8
             }}
           >
             <AlertTriangle size={13} />
             <span>Low-confidence elements flagged below for verification.</span>
           </div>
         )}
+
+        {/* Filter Tabs */}
+        <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          <button
+            onClick={() => setFilterTab('all')}
+            style={{
+              flex: 1,
+              fontSize: 10,
+              padding: '4px 6px',
+              borderRadius: 4,
+              border: filterTab === 'all' ? '1px solid var(--gold-border-bright)' : '1px solid transparent',
+              background: filterTab === 'all' ? 'var(--surface-elevated)' : 'transparent',
+              color: filterTab === 'all' ? 'var(--gold-bright)' : 'var(--text-subtle)',
+              cursor: 'pointer'
+            }}
+          >
+            All ({reviewItems.length})
+          </button>
+          <button
+            onClick={() => setFilterTab('needs_review')}
+            style={{
+              flex: 1,
+              fontSize: 10,
+              padding: '4px 6px',
+              borderRadius: 4,
+              border: filterTab === 'needs_review' ? '1px solid var(--status-warning)' : '1px solid transparent',
+              background: filterTab === 'needs_review' ? 'rgba(230, 126, 34, 0.15)' : 'transparent',
+              color: filterTab === 'needs_review' ? 'var(--status-warning)' : 'var(--text-subtle)',
+              cursor: 'pointer'
+            }}
+          >
+            Review ({lowConfidenceCount})
+          </button>
+          <button
+            onClick={() => setFilterTab('verified')}
+            style={{
+              flex: 1,
+              fontSize: 10,
+              padding: '4px 6px',
+              borderRadius: 4,
+              border: filterTab === 'verified' ? '1px solid var(--status-success)' : '1px solid transparent',
+              background: filterTab === 'verified' ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
+              color: filterTab === 'verified' ? 'var(--status-success)' : 'var(--text-subtle)',
+              cursor: 'pointer'
+            }}
+          >
+            Verified ({verifiedCount})
+          </button>
+        </div>
       </div>
 
       {/* Action Toolbar */}
@@ -165,11 +244,22 @@ export const OcrPanel: React.FC = () => {
         >
           <Split size={13} /> Split
         </LuxuryButton>
+
+        {lowConfidenceCount > 0 && (
+          <LuxuryButton
+            size="sm"
+            variant="default"
+            onClick={handleAcceptAllHighConfidence}
+            title="Accept all high-confidence detections in batch"
+          >
+            <CheckCircle size={13} /> Accept &gt;80%
+          </LuxuryButton>
+        )}
       </div>
 
       {/* Review List */}
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {reviewItems.map((item) => {
+        {filteredItems.map((item) => {
           const node = sceneGraph.nodes[item.nodeId];
           if (!node) return null;
 
@@ -273,6 +363,24 @@ export const OcrPanel: React.FC = () => {
                       title="Accept & mark verified"
                     >
                       <CheckCircle size={13} />
+                    </button>
+                  )}
+                  {/* Demote to Background button */}
+                  {node.type !== 'background' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDemoteToBackground(item.nodeId);
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-subtle)',
+                        cursor: 'pointer'
+                      }}
+                      title="Demote to background plane"
+                    >
+                      <Layers size={12} />
                     </button>
                   )}
 

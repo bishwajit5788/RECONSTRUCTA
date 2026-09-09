@@ -9,13 +9,16 @@ export type FeatureStatus = 'implemented' | 'partial' | 'planned' | 'unsupported
 export interface CapabilityEntry {
   id: string;
   name: string;
-  category: 'vision' | 'ocr' | 'typography' | 'reconstruction' | 'layout' | 'document' | 'export' | 'platform' | 'security' | 'storage';
+  category: 'vision' | 'ocr' | 'typography' | 'reconstruction' | 'layout' | 'document' | 'export' | 'platform' | 'security' | 'storage' | 'workflow';
   status: FeatureStatus;
   localCapable: boolean;
   backendAccelerated: boolean;
   supportedInputTypes: string[];
   averageConfidence: number;
   tested: boolean;
+  testLevel?: 'unit' | 'integration' | 'e2e';
+  testCases?: string[];
+  reviewRequired?: boolean;
   limitations: string[];
   description: string;
 }
@@ -206,5 +209,35 @@ export const CAPABILITY_REGISTRY: Record<string, CapabilityEntry> = {
       'All temporary uploads, intermediate OCR/inpainting files, exports, and project sessions are purged after 2 hours'
     ],
     description: 'Background cleanup worker, MongoDB TTL indexes, explicit purge endpoints, and client-side IndexedDB sweeps enforce strict 2-hour retention.'
+  },
+  scene_graph_core: {
+    id: 'scene_graph_core',
+    name: 'Universal Scene Graph & Provenance Traceability',
+    category: 'reconstruction',
+    status: 'implemented',
+    localCapable: true,
+    backendAccelerated: false,
+    supportedInputTypes: ['application/json'],
+    averageConfidence: 1.0,
+    tested: true,
+    testLevel: 'unit',
+    testCases: ['test_scene_graph_node_traceability', 'test_non_destructive_tree_updates'],
+    limitations: [],
+    description: 'Non-destructive hierarchical scene graph linking nodes to original sourceRegions, measured confidence evidence, and reconstruction fidelity status.'
+  },
+  human_review_workflow: {
+    id: 'human_review_workflow',
+    name: 'Human-in-the-Loop Review & Region Refinement',
+    category: 'workflow',
+    status: 'implemented',
+    localCapable: true,
+    backendAccelerated: false,
+    supportedInputTypes: ['*/*'],
+    averageConfidence: 1.0,
+    tested: true,
+    testLevel: 'unit',
+    testCases: ['test_region_merge', 'test_region_split', 'test_confidence_filtering'],
+    limitations: [],
+    description: 'Interactive review panel supporting confidence filtering, bulk acceptance, horizontal/vertical splitting, region merging, type reclassification, and demotion to background.'
   }
 };

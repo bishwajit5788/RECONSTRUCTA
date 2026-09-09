@@ -18,6 +18,7 @@ import { ExportDialog } from './components/dialogs/ExportDialog';
 import { CommandPalette } from './components/dialogs/CommandPalette';
 import { AssetGalleryDialog } from './components/dialogs/AssetGalleryDialog';
 import { VersionHistoryDialog } from './components/dialogs/VersionHistoryDialog';
+import { CapabilityReportDialog } from './components/dialogs/CapabilityReportDialog';
 
 import { FileDetector } from './parsers/fileDetector';
 import { PDFParser } from './parsers/pdfParser';
@@ -57,6 +58,7 @@ export const App: React.FC = () => {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isAssetGalleryOpen, setIsAssetGalleryOpen] = useState(false);
   const [isVersionHistoryOpen, setIsVersionHistoryOpen] = useState(false);
+  const [isCapabilityReportOpen, setIsCapabilityReportOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Multi-slide / Presentation & Multi-page PDF State
@@ -325,7 +327,13 @@ export const App: React.FC = () => {
             confidence: obj.confidence,
             confidenceLabel: obj.confidenceLabel,
             reviewRequired: obj.reviewRequired,
-            source: 'vision'
+            source: 'vision',
+            sourceRegion: { ...obj.bounds },
+            confidenceSource: 'heuristics',
+            evidence: obj.evidence || { detectedVia: 'pixel gradient boundary' },
+            detectionMethod: obj.detectionMethod || 'Modular computer vision detector',
+            reconstructionStatus: obj.reconstructionStatus || 'reconstructed',
+            limitations: obj.limitations || []
           };
           rootIds.push(obj.id);
         }
@@ -351,6 +359,9 @@ export const App: React.FC = () => {
               platformMatch.platformId
             );
 
+            const ocrConf = Math.round(((line.confidence + semantic.confidence) / 2) * 100) / 100;
+            const typoLabel = typo.confidenceLabel === 'High confidence' ? 'HIGH' : typo.confidenceLabel === 'Estimated' ? 'MEDIUM' : 'LOW';
+
             nodes[nodeId] = {
               id: nodeId,
               name: `${semantic.role.toUpperCase()}: ${line.text.slice(0, 16)}`,
@@ -375,10 +386,21 @@ export const App: React.FC = () => {
               letterSpacing: 0,
               alignment: 'left',
               constraints: { mode: semantic.role === 'message' ? 'reflow' : 'fixed' },
-              confidence: Math.round(((line.confidence + semantic.confidence) / 2) * 100) / 100,
-              confidenceLabel: typo.confidenceLabel === 'High confidence' ? 'HIGH' : typo.confidenceLabel === 'Estimated' ? 'MEDIUM' : 'LOW',
+              confidence: ocrConf,
+              confidenceLabel: typoLabel,
               source: 'ocr',
-              platformHint: platformMatch.platformId
+              platformHint: platformMatch.platformId,
+              sourceRegion: { ...line.bbox },
+              confidenceSource: 'tesseract',
+              evidence: {
+                tesseractConfidence: Math.round(line.confidence * 100),
+                semanticConfidence: Math.round(semantic.confidence * 100),
+                semanticPattern: semantic.explanation || 'contextual',
+                fontCandidatesTested: typo.candidates?.length || 3
+              },
+              detectionMethod: 'Tesseract.js OCR Worker + Semantic Classifier',
+              reconstructionStatus: 'reconstructed',
+              limitations: typo.confidenceLabel === 'Possible match' ? ['Font family is an estimate based on character aspect ratio'] : []
             };
             rootIds.push(nodeId);
           }
@@ -731,6 +753,7 @@ export const App: React.FC = () => {
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         onOpenAssetGallery={() => setIsAssetGalleryOpen(true)}
         onOpenVersionHistory={() => setIsVersionHistoryOpen(true)}
+        onOpenCapabilityReport={() => setIsCapabilityReportOpen(true)}
         saveStatus={saveStatus}
       />
 
@@ -949,6 +972,11 @@ export const App: React.FC = () => {
       <VersionHistoryDialog
         isOpen={isVersionHistoryOpen}
         onClose={() => setIsVersionHistoryOpen(false)}
+      />
+
+      <CapabilityReportDialog
+        isOpen={isCapabilityReportOpen}
+        onClose={() => setIsCapabilityReportOpen(false)}
       />
     </div>
   );

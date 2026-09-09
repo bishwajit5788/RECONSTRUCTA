@@ -176,7 +176,7 @@ export class EMLParser {
     }
 
     // Strict DOMPurify Sanitization
-    const sanitizedHtml = DOMPurify.sanitize(rawHtml, {
+    let sanitizedHtml = DOMPurify.sanitize(rawHtml, {
       ALLOWED_TAGS: [
         'b', 'i', 'em', 'strong', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'ul', 'ol', 'li',
         'table', 'tr', 'td', 'th', 'thead', 'tbody', 'span', 'div', 'a', 'img', 'hr', 'blockquote'
@@ -186,6 +186,15 @@ export class EMLParser {
       FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'formaction'],
       ALLOW_DATA_ATTR: false
     });
+
+    // Resolve inline CID images to embedded attachment data URLs
+    for (const att of attachments) {
+      if (att.contentId && att.dataUrl) {
+        const cleanCid = att.contentId.replace(/[<>]/g, '');
+        const cidRegex = new RegExp(`src=["']cid:${cleanCid}["']`, 'gi');
+        sanitizedHtml = sanitizedHtml.replace(cidRegex, `src="${att.dataUrl}"`);
+      }
+    }
 
     if (!bodyText && sanitizedHtml) {
       const tempDiv = typeof document !== 'undefined' ? document.createElement('div') : null;
@@ -223,16 +232,17 @@ export class EMLParser {
 
     // 1. Email Client Header Container Card
     const headerCardId = 'email_header_card';
+    const headerCardBounds = { x: 32, y: 32, width: canvasWidth - 64, height: email.cc ? 140 : 120 };
     nodes[headerCardId] = {
       id: headerCardId,
       name: 'Email Header Card',
       type: 'shape',
       parentId: null,
       childrenIds: ['email_from', 'email_to', 'email_subject', 'email_date'],
-      x: 32,
-      y: 32,
-      width: canvasWidth - 64,
-      height: email.cc ? 140 : 120,
+      x: headerCardBounds.x,
+      y: headerCardBounds.y,
+      width: headerCardBounds.width,
+      height: headerCardBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 1,
@@ -244,21 +254,29 @@ export class EMLParser {
       borderRadius: 8,
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: headerCardBounds,
+      confidenceSource: 'eml_mime',
+      evidence: { rfcHeadersParsed: Object.keys(email).length },
+      detectionMethod: 'RFC 822 header extraction',
+      reconstructionStatus: 'native',
+      limitations: []
     };
     rootIds.push(headerCardId);
 
     // From Node
+    const fromBounds = { x: 48, y: 46, width: canvasWidth - 96, height: 22 };
     nodes['email_from'] = {
       id: 'email_from',
       name: 'Sender',
       type: 'name',
       parentId: headerCardId,
       childrenIds: [],
-      x: 48,
-      y: 46,
-      width: canvasWidth - 96,
-      height: 22,
+      x: fromBounds.x,
+      y: fromBounds.y,
+      width: fromBounds.width,
+      height: fromBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 2,
@@ -273,20 +291,27 @@ export class EMLParser {
       alignment: 'left',
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: fromBounds,
+      confidenceSource: 'eml_mime',
+      detectionMethod: 'RFC 822 From header parser',
+      reconstructionStatus: 'native',
+      limitations: []
     };
 
     // To Node
+    const toBounds = { x: 48, y: 70, width: canvasWidth - 96, height: 20 };
     nodes['email_to'] = {
       id: 'email_to',
       name: 'Recipient',
       type: 'email',
       parentId: headerCardId,
       childrenIds: [],
-      x: 48,
-      y: 70,
-      width: canvasWidth - 96,
-      height: 20,
+      x: toBounds.x,
+      y: toBounds.y,
+      width: toBounds.width,
+      height: toBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 2,
@@ -301,20 +326,27 @@ export class EMLParser {
       alignment: 'left',
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: toBounds,
+      confidenceSource: 'eml_mime',
+      detectionMethod: 'RFC 822 To/Cc header parser',
+      reconstructionStatus: 'native',
+      limitations: []
     };
 
     // Subject Node
+    const subjectBounds = { x: 48, y: 96, width: canvasWidth - 96, height: 26 };
     nodes['email_subject'] = {
       id: 'email_subject',
       name: 'Subject',
       type: 'heading',
       parentId: headerCardId,
       childrenIds: [],
-      x: 48,
-      y: 96,
-      width: canvasWidth - 96,
-      height: 26,
+      x: subjectBounds.x,
+      y: subjectBounds.y,
+      width: subjectBounds.width,
+      height: subjectBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 2,
@@ -329,20 +361,27 @@ export class EMLParser {
       alignment: 'left',
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: subjectBounds,
+      confidenceSource: 'eml_mime',
+      detectionMethod: 'RFC 822 Subject header parser',
+      reconstructionStatus: 'native',
+      limitations: []
     };
 
     // Date Node
+    const dateBounds = { x: canvasWidth - 230, y: 46, width: 180, height: 20 };
     nodes['email_date'] = {
       id: 'email_date',
       name: 'Date',
       type: 'timestamp',
       parentId: headerCardId,
       childrenIds: [],
-      x: canvasWidth - 230,
-      y: 46,
-      width: 180,
-      height: 20,
+      x: dateBounds.x,
+      y: dateBounds.y,
+      width: dateBounds.width,
+      height: dateBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 2,
@@ -356,7 +395,13 @@ export class EMLParser {
       alignment: 'right',
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: dateBounds,
+      confidenceSource: 'eml_mime',
+      detectionMethod: 'RFC 822 Date header parser',
+      reconstructionStatus: 'native',
+      limitations: []
     };
 
     let bodyStartY = (email.cc ? 140 : 120) + 48;
@@ -364,16 +409,17 @@ export class EMLParser {
     // 2. Attachments Section Pills (if any)
     if (email.attachments.length > 0) {
       const attCardId = 'email_attachments_bar';
+      const attCardBounds = { x: 32, y: bodyStartY, width: canvasWidth - 64, height: 38 };
       nodes[attCardId] = {
         id: attCardId,
         name: `Attachments (${email.attachments.length})`,
         type: 'shape',
         parentId: null,
         childrenIds: [],
-        x: 32,
-        y: bodyStartY,
-        width: canvasWidth - 64,
-        height: 38,
+        x: attCardBounds.x,
+        y: attCardBounds.y,
+        width: attCardBounds.width,
+        height: attCardBounds.height,
         rotation: 0,
         opacity: 1,
         zIndex: 1,
@@ -385,7 +431,14 @@ export class EMLParser {
         borderRadius: 6,
         constraints: { mode: 'fixed' },
         confidence: 1.0,
-        source: 'eml'
+        confidenceLabel: 'HIGH',
+        source: 'eml',
+        sourceRegion: attCardBounds,
+        confidenceSource: 'eml_mime',
+        evidence: { attachmentCount: email.attachments.length },
+        detectionMethod: 'MIME multipart attachment extractor',
+        reconstructionStatus: 'native',
+        limitations: []
       };
       rootIds.push(attCardId);
 
@@ -393,16 +446,17 @@ export class EMLParser {
         .map((a) => `${a.filename} (${Math.round(a.sizeBytes / 1024)} KB)`)
         .join('  •  ');
 
+      const attLabelBounds = { x: 46, y: bodyStartY + 10, width: canvasWidth - 92, height: 20 };
       nodes['email_attachments_label'] = {
         id: 'email_attachments_label',
         name: 'Attachment Labels',
         type: 'text',
         parentId: attCardId,
         childrenIds: [],
-        x: 46,
-        y: bodyStartY + 10,
-        width: canvasWidth - 92,
-        height: 20,
+        x: attLabelBounds.x,
+        y: attLabelBounds.y,
+        width: attLabelBounds.width,
+        height: attLabelBounds.height,
         rotation: 0,
         opacity: 1,
         zIndex: 2,
@@ -417,7 +471,13 @@ export class EMLParser {
         alignment: 'left',
         constraints: { mode: 'fixed' },
         confidence: 1.0,
-        source: 'eml'
+        confidenceLabel: 'HIGH',
+        source: 'eml',
+        sourceRegion: attLabelBounds,
+        confidenceSource: 'eml_mime',
+        detectionMethod: 'MIME header parsing',
+        reconstructionStatus: 'native',
+        limitations: []
       };
       rootIds.push('email_attachments_label');
 
@@ -427,6 +487,7 @@ export class EMLParser {
     // 3. Email Body Container
     const bodyCardId = 'email_body_card';
     const bodyHeight = Math.max(canvasHeight - bodyStartY - 32, 400);
+    const bodyBounds = { x: 32, y: bodyStartY, width: canvasWidth - 64, height: bodyHeight };
 
     nodes[bodyCardId] = {
       id: bodyCardId,
@@ -434,10 +495,10 @@ export class EMLParser {
       type: 'shape',
       parentId: null,
       childrenIds: ['email_body_text'],
-      x: 32,
-      y: bodyStartY,
-      width: canvasWidth - 64,
-      height: bodyHeight,
+      x: bodyBounds.x,
+      y: bodyBounds.y,
+      width: bodyBounds.width,
+      height: bodyBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 1,
@@ -449,21 +510,28 @@ export class EMLParser {
       borderRadius: 8,
       constraints: { mode: 'fixed' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: bodyBounds,
+      confidenceSource: 'eml_mime',
+      detectionMethod: 'Email body container frame',
+      reconstructionStatus: 'native',
+      limitations: []
     };
     rootIds.push(bodyCardId);
 
     // Email Body Text Node
+    const bodyTextBounds = { x: 48, y: bodyStartY + 16, width: canvasWidth - 96, height: bodyHeight - 32 };
     nodes['email_body_text'] = {
       id: 'email_body_text',
       name: 'Email Content',
       type: 'message',
       parentId: bodyCardId,
       childrenIds: [],
-      x: 48,
-      y: bodyStartY + 16,
-      width: canvasWidth - 96,
-      height: bodyHeight - 32,
+      x: bodyTextBounds.x,
+      y: bodyTextBounds.y,
+      width: bodyTextBounds.width,
+      height: bodyTextBounds.height,
       rotation: 0,
       opacity: 1,
       zIndex: 2,
@@ -478,7 +546,17 @@ export class EMLParser {
       alignment: 'left',
       constraints: { mode: 'reflow' },
       confidence: 1.0,
-      source: 'eml'
+      confidenceLabel: 'HIGH',
+      source: 'eml',
+      sourceRegion: bodyTextBounds,
+      confidenceSource: 'eml_mime',
+      evidence: {
+        bodyLengthChars: email.bodyText.length,
+        hasHtml: !!email.sanitizedHtml
+      },
+      detectionMethod: 'RFC 822 MIME body decode & DOMPurify sanitizer',
+      reconstructionStatus: 'native',
+      limitations: []
     };
 
     return {

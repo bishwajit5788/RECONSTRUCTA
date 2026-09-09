@@ -13,7 +13,9 @@ import {
   Sliders,
   Type,
   Maximize2,
-  Layers
+  Layers,
+  ShieldCheck,
+  AlertCircle
 } from 'lucide-react';
 import { LayoutMode } from '../../types/sceneGraph';
 
@@ -328,6 +330,155 @@ export const Inspector: React.FC = () => {
             <option value="reflow">Smart Reflow (Push siblings)</option>
           </select>
         </div>
+      </div>
+
+      {/* 5. Source Traceability & Provenance Evidence */}
+      <div className="inspector-section">
+        <div className="inspector-title">
+          <span>SOURCE TRACEABILITY</span>
+          <ShieldCheck size={13} style={{ color: 'var(--gold-bright)' }} />
+        </div>
+
+        {/* Reconstruction Status Badge */}
+        <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span className="field-label" style={{ margin: 0 }}>Fidelity Status</span>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: '2px 8px',
+              borderRadius: 4,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              fontFamily: 'var(--font-mono)',
+              background:
+                selectedNode.reconstructionStatus === 'native'
+                  ? 'rgba(46, 204, 113, 0.15)'
+                  : selectedNode.reconstructionStatus === 'approximated'
+                  ? 'rgba(230, 126, 34, 0.15)'
+                  : selectedNode.reconstructionStatus === 'flattened'
+                  ? 'rgba(155, 89, 182, 0.15)'
+                  : 'rgba(212, 175, 55, 0.15)',
+              color:
+                selectedNode.reconstructionStatus === 'native'
+                  ? 'var(--status-success)'
+                  : selectedNode.reconstructionStatus === 'approximated'
+                  ? 'var(--status-warning)'
+                  : selectedNode.reconstructionStatus === 'flattened'
+                  ? '#C39BD3'
+                  : 'var(--gold-bright)',
+              border: '1px solid currentColor'
+            }}
+          >
+            {selectedNode.reconstructionStatus || 'reconstructed'}
+          </span>
+        </div>
+
+        {/* Source Region Coordinates */}
+        <div className="field-group">
+          <span className="field-label">Original Source Bounding Box</span>
+          <div
+            style={{
+              padding: '6px 8px',
+              background: 'var(--surface-sunken)',
+              borderRadius: 'var(--radius-xs)',
+              fontSize: 11,
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-subtle)',
+              display: 'flex',
+              justifyContent: 'space-between'
+            }}
+          >
+            <span>X: {selectedNode.sourceRegion?.x ?? selectedNode.x}</span>
+            <span>Y: {selectedNode.sourceRegion?.y ?? selectedNode.y}</span>
+            <span>W: {selectedNode.sourceRegion?.width ?? selectedNode.width}</span>
+            <span>H: {selectedNode.sourceRegion?.height ?? selectedNode.height}</span>
+          </div>
+        </div>
+
+        {/* Detection Method & Confidence Engine */}
+        <div className="field-group">
+          <span className="field-label">Detection Method & Engine</span>
+          <div
+            style={{
+              padding: '6px 8px',
+              background: 'var(--surface-sunken)',
+              borderRadius: 'var(--radius-xs)',
+              fontSize: 11,
+              color: 'var(--text-ivory)',
+              lineHeight: 1.35
+            }}
+          >
+            <div style={{ fontWeight: 500, color: 'var(--gold-antique)' }}>
+              {selectedNode.detectionMethod || `${selectedNode.source.toUpperCase()} Pipeline`}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-subtle)', marginTop: 2 }}>
+              Confidence Source: {selectedNode.confidenceSource || selectedNode.source}
+            </div>
+          </div>
+        </div>
+
+        {/* Measured Evidence Key-Values */}
+        {selectedNode.evidence && Object.keys(selectedNode.evidence).length > 0 && (
+          <div className="field-group">
+            <span className="field-label">Measured Pixel Evidence</span>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 4,
+                background: 'var(--surface-sunken)',
+                padding: 6,
+                borderRadius: 'var(--radius-xs)'
+              }}
+            >
+              {Object.entries(selectedNode.evidence).map(([k, v]) => (
+                <div
+                  key={k}
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 4px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                  title={`${k}: ${String(v)}`}
+                >
+                  <span style={{ color: 'var(--text-subtle)' }}>{k}: </span>
+                  <span style={{ color: 'var(--gold-light)', fontFamily: 'var(--font-mono)' }}>
+                    {String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Known Limitations Caution */}
+        {selectedNode.limitations && selectedNode.limitations.length > 0 && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: '8px 10px',
+              background: 'rgba(230, 126, 34, 0.08)',
+              border: '1px solid rgba(230, 126, 34, 0.3)',
+              borderRadius: 'var(--radius-xs)',
+              fontSize: 10.5,
+              color: 'var(--status-warning)',
+              lineHeight: 1.4
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, marginBottom: 4 }}>
+              <AlertCircle size={12} />
+              <span>Known Fidelity Limitations</span>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 14 }}>
+              {selectedNode.limitations.map((lim, idx) => (
+                <li key={idx}>{lim}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </aside>
   );
