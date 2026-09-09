@@ -3,6 +3,7 @@
  */
 
 import '@testing-library/jest-dom';
+import '@testing-library/jest-dom/vitest';
 
 // Polyfill HTMLCanvasElement.prototype.getContext for JSDOM
 if (typeof HTMLCanvasElement !== 'undefined') {

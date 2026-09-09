@@ -4,7 +4,6 @@
 
 import { describe, it, expect } from 'vitest';
 import { ConstraintSolver } from '../engine/layout/constraintSolver';
-import { ChatReflow } from '../engine/layout/chatReflow';
 import { SceneGraph, SceneNode } from '../types/sceneGraph';
 
 describe('Layout Constraint Solver', () => {

@@ -1,13 +1,14 @@
 /**
- * RECONSTRUCTA — PDF PARSER & VECTOR/SCANNED ENGINE
- * Extracts pages, vector text objects, font metrics, and provides page manipulation & re-export via pdfjs-dist and pdf-lib.
+ * RECONSTRUCTA — MULTI-PAGE PDF VECTOR & SCANNED PARSER
+ * Extracts all pages with configurable safety thresholds (no silent 30-page truncation),
+ * vector text items with coordinates, page thumbnails, and page rotation.
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
 import { SceneGraph, SceneNode } from '../types/sceneGraph';
 
-// Set up PDF.js worker source using CDN or local worker bundle
+// Configure PDF.js worker
 if (typeof window !== 'undefined' && 'GlobalWorkerOptions' in pdfjsLib) {
   (pdfjsLib as any).GlobalWorkerOptions.workerSrc =
     'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + (pdfjsLib.version || '4.0.379') + '/build/pdf.worker.min.mjs';
@@ -17,13 +18,17 @@ export interface PDFPageData {
   pageNumber: number;
   width: number;
   height: number;
+  rotation: number; // 0, 90, 180, 270
   canvas: HTMLCanvasElement;
+  thumbnailUrl: string;
   textNodes: SceneNode[];
   isScanned: boolean;
 }
 
 export interface PDFParseResult {
   numPages: number;
+  loadedPagesCount: number;
+  safetyNotice?: string;
   pages: PDFPageData[];
   title?: string;
   author?: string;
@@ -31,21 +36,31 @@ export interface PDFParseResult {
 
 export class PDFParser {
   /**
-   * Parses an uploaded PDF file into editable pages and scene graph layers
+   * Parses an uploaded PDF file into editable pages without silent page cutoffs
    */
-  static async parsePDF(file: File): Promise<PDFParseResult> {
+  static async parsePDF(
+    file: File,
+    maxPages: number = 100
+  ): Promise<PDFParseResult> {
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
     const pdfDoc = await loadingTask.promise;
 
     const numPages = pdfDoc.numPages;
+    const pagesToLoad = Math.min(numPages, maxPages);
+    let safetyNotice: string | undefined = undefined;
+
+    if (numPages > maxPages) {
+      safetyNotice = `Document contains ${numPages} pages. First ${maxPages} pages loaded for browser memory safety. Additional pages can be loaded on request.`;
+    }
+
     const pages: PDFPageData[] = [];
 
-    for (let pageNum = 1; pageNum <= Math.min(numPages, 30); pageNum++) {
+    for (let pageNum = 1; pageNum <= pagesToLoad; pageNum++) {
       const page = await pdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.5 }); // High-res rendering
+      const viewport = page.getViewport({ scale: 1.5 });
 
-      // 1. Render Page to Canvas
+      // 1. Render Page to High-Resolution Canvas
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -58,6 +73,17 @@ export class PDFParser {
         } as any).promise);
       }
 
+      // Generate thumbnail
+      const thumbCanvas = document.createElement('canvas');
+      const thumbScale = 0.25;
+      thumbCanvas.width = Math.round(viewport.width * thumbScale);
+      thumbCanvas.height = Math.round(viewport.height * thumbScale);
+      const thumbCtx = thumbCanvas.getContext('2d');
+      if (thumbCtx) {
+        thumbCtx.drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+      }
+      const thumbnailUrl = thumbCanvas.toDataURL('image/jpeg', 0.7);
+
       // 2. Extract Native Vector Text Content
       const textContent = await page.getTextContent();
       const textNodes: SceneNode[] = [];
@@ -66,9 +92,8 @@ export class PDFParser {
         const item: any = textContent.items[i];
         if (!item.str || !item.str.trim()) continue;
 
-        // Transform matrix [scaleX, skewY, skewX, scaleY, transformX, transformY]
         const tx = item.transform[4] * 1.5;
-        const ty = viewport.height - item.transform[5] * 1.5; // PDF origin is bottom-left
+        const ty = viewport.height - item.transform[5] * 1.5;
         const fontSize = Math.max(Math.round(item.height * 1.5), 10);
         const fontWidth = Math.max(Math.round(item.width * 1.5), 20);
 
@@ -101,14 +126,16 @@ export class PDFParser {
         });
       }
 
-      // If page has almost no native vector text (< 3 items), classify as scanned document
-      const isScanned = textNodes.length < 3;
+      // Check if scanned (no vector text recovered)
+      const isScanned = textNodes.length === 0;
 
       pages.push({
         pageNumber: pageNum,
         width: viewport.width,
         height: viewport.height,
+        rotation: 0,
         canvas,
+        thumbnailUrl,
         textNodes,
         isScanned
       });
@@ -116,32 +143,79 @@ export class PDFParser {
 
     return {
       numPages,
+      loadedPagesCount: pages.length,
+      safetyNotice,
       pages
     };
   }
 
   /**
-   * Generates a new multi-page PDF from the edited scene graph
+   * Converts a specific PDF page into an editable scene graph
    */
-  static async exportToPDF(pages: { canvas: HTMLCanvasElement; textNodes: SceneNode[] }[]): Promise<Blob> {
-    const pdfDoc = await PDFDocument.create();
+  static buildPageSceneGraph(page: PDFPageData): SceneGraph {
+    const nodes: Record<string, SceneNode> = {};
+    const rootIds: string[] = [];
 
-    for (const pageData of pages) {
-      const { canvas } = pageData;
-      const pngDataUrl = canvas.toDataURL('image/png');
-      const pngImageBytes = await fetch(pngDataUrl).then((res) => res.arrayBuffer());
-      const pngImage = await pdfDoc.embedPng(pngImageBytes);
+    // Background plane
+    const bgId = `pdf_p${page.pageNumber}_bg`;
+    nodes[bgId] = {
+      id: bgId,
+      name: `Page ${page.pageNumber} Canvas Background`,
+      type: 'background',
+      parentId: null,
+      childrenIds: [],
+      x: 0,
+      y: 0,
+      width: page.width,
+      height: page.height,
+      rotation: page.rotation || 0,
+      opacity: 1,
+      zIndex: 1,
+      visible: true,
+      locked: true,
+      src: page.canvas.toDataURL('image/png'),
+      backgroundColor: '#FFFFFF',
+      constraints: { mode: 'fixed' },
+      confidence: 1.0,
+      source: 'pdf'
+    };
+    rootIds.push(bgId);
 
-      const page = pdfDoc.addPage([canvas.width, canvas.height]);
-      page.drawImage(pngImage, {
-        x: 0,
-        y: 0,
-        width: canvas.width,
-        height: canvas.height
-      });
+    // Overlay recoverable text nodes
+    for (const tn of page.textNodes) {
+      nodes[tn.id] = tn;
+      rootIds.push(tn.id);
     }
 
-    const pdfBytes = await pdfDoc.save();
-    return new Blob([pdfBytes as any], { type: 'application/pdf' });
+    return {
+      nodes,
+      rootIds,
+      canvasWidth: page.width,
+      canvasHeight: page.height,
+      backgroundColor: '#FFFFFF',
+      originalImageUrl: page.canvas.toDataURL('image/png')
+    };
+  }
+
+  /**
+   * Generates a PDF Blob from canvas pages
+   */
+  static async exportToPDF(
+    pages: { canvas: HTMLCanvasElement; textNodes?: SceneNode[] }[]
+  ): Promise<Blob> {
+    const pdfDoc = await PDFDocument.create();
+    for (const p of pages) {
+      const pageImageBytes = await fetch(p.canvas.toDataURL('image/png')).then((r) => r.arrayBuffer());
+      const embeddedImage = await pdfDoc.embedPng(pageImageBytes);
+      const page = pdfDoc.addPage([p.canvas.width, p.canvas.height]);
+      page.drawImage(embeddedImage, {
+        x: 0,
+        y: 0,
+        width: p.canvas.width,
+        height: p.canvas.height
+      });
+    }
+    const bytes = await pdfDoc.save();
+    return new Blob([bytes as any], { type: 'application/pdf' });
   }
 }

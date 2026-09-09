@@ -5,6 +5,7 @@
 
 import React, { act } from 'react';
 import { describe, it, expect } from 'vitest';
+import '@testing-library/jest-dom/vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { App } from '../App';
 
@@ -14,7 +15,7 @@ describe('App Component Integration', () => {
 
     expect(screen.getByText('RECONSTRUCTA')).toBeInTheDocument();
     expect(screen.getByText(/Visual & Document Workstation/i)).toBeInTheDocument();
-    expect(screen.getByText('IMPORT VISUAL OR DOCUMENT')).toBeInTheDocument();
+    expect(screen.getByText(/Browse Local File/i)).toBeInTheDocument();
     expect(screen.getByText('Load Interactive Demo')).toBeInTheDocument();
   });
 
@@ -29,7 +30,7 @@ describe('App Component Integration', () => {
     // Verify layer tree contains demo elements
     expect(screen.getByText(/Contact Name/i)).toBeInTheDocument();
     expect(screen.getByText(/Received Bubble/i)).toBeInTheDocument();
-    expect(screen.getByText(/Message Text/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Message Text/i).length).toBeGreaterThan(0);
   });
 
   it('opens export dialog when export button is clicked', async () => {

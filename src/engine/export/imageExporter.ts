@@ -4,7 +4,7 @@
  * with calibrated "EDITED / MOCKUP" provenance indicators.
  */
 
-import { SceneGraph, SceneNode } from '../../types/sceneGraph';
+import { SceneGraph } from '../../types/sceneGraph';
 import { ExportConfig } from '../../types/project';
 
 export class ImageExporter {
@@ -78,7 +78,7 @@ export class ImageExporter {
         }
       }
 
-      // Render Text
+      // Render Text with Multiline Support
       if (node.content) {
         const fontSize = (node.fontSize || 14) * scale;
         const fontFamily = node.fontFamily || 'Inter, sans-serif';
@@ -87,16 +87,43 @@ export class ImageExporter {
         ctx.fillStyle = node.color || '#FFFFFF';
         ctx.textBaseline = 'top';
 
-        if (node.alignment === 'center') {
-          ctx.textAlign = 'center';
-          ctx.fillText(node.content, nx + nw / 2, ny + 2 * scale);
-        } else if (node.alignment === 'right') {
-          ctx.textAlign = 'right';
-          ctx.fillText(node.content, nx + nw - 4 * scale, ny + 2 * scale);
-        } else {
-          ctx.textAlign = 'left';
-          ctx.fillText(node.content, nx + 4 * scale, ny + 2 * scale);
+        const paragraphs = node.content.split(/\r?\n/);
+        const maxLineWidth = Math.max(nw - 8 * scale, 20 * scale);
+        const lines: string[] = [];
+
+        for (const para of paragraphs) {
+          if (!para) {
+            lines.push('');
+            continue;
+          }
+          const words = para.split(' ');
+          let currentLine = '';
+          for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            if (ctx.measureText(testLine).width > maxLineWidth && currentLine) {
+              lines.push(currentLine);
+              currentLine = word;
+            } else {
+              currentLine = testLine;
+            }
+          }
+          if (currentLine) lines.push(currentLine);
         }
+
+        const lineHeight = fontSize * (node.lineHeight || 1.25);
+        lines.forEach((l, idx) => {
+          const lineY = ny + 2 * scale + idx * lineHeight;
+          if (node.alignment === 'center') {
+            ctx.textAlign = 'center';
+            ctx.fillText(l, nx + nw / 2, lineY);
+          } else if (node.alignment === 'right') {
+            ctx.textAlign = 'right';
+            ctx.fillText(l, nx + nw - 4 * scale, lineY);
+          } else {
+            ctx.textAlign = 'left';
+            ctx.fillText(l, nx + 4 * scale, lineY);
+          }
+        });
       }
 
       ctx.restore();

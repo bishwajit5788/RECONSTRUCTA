@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FileDetector, MAX_FILE_SIZE_BYTES } from '../parsers/fileDetector';
+import { FileDetector } from '../parsers/fileDetector';
 import { EMLParser } from '../parsers/emlParser';
 
 describe('File Security & Format Detector', () => {

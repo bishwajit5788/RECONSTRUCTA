@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { useEditorStore } from '../../store/useEditorStore';
-import { useHistoryStore } from '../../store/useHistoryStore';
 import {
   Search,
   Download,

@@ -5,7 +5,7 @@
 
 import React, { useRef, useState, MouseEvent } from 'react';
 import { useEditorStore } from '../../store/useEditorStore';
-import { Columns, SplitSquareVertical } from 'lucide-react';
+import { SplitSquareVertical } from 'lucide-react';
 
 interface BeforeAfterSplitProps {
   originalImageUrl?: string;

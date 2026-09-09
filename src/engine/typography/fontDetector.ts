@@ -1,6 +1,7 @@
 /**
  * RECONSTRUCTA — ADVANCED TYPOGRAPHY ENGINE (FONT DETECTOR)
- * Estimates font category, candidate ranking, stroke weight, foreground color, and alignment.
+ * Estimates font category, candidate ranking, stroke weight, foreground color, line height, and alignment.
+ * Never claims exact font recovery from raster images; clearly labels estimates.
  */
 
 import { BoundingBox, TextAlignment } from '../../types/sceneGraph';
@@ -9,19 +10,28 @@ export interface FontCandidate {
   family: string;
   category: 'sans-serif' | 'serif' | 'monospace' | 'display';
   confidence: number; // 0.0 - 1.0
+  matchLabel: 'High confidence' | 'Estimated' | 'Possible match';
 }
 
-export interface TypographyEstimation {
+export interface FontAnalysisResult {
   candidates: FontCandidate[];
   recommendedFamily: string;
   estimatedSize: number;
   estimatedWeight: number;
-  color: string;
+  estimatedColor: string;
   backgroundColor: string;
   lineHeight: number;
   letterSpacing: number;
   alignment: TextAlignment;
+  fallbackStack: string;
   confidence: number;
+  confidenceLabel: 'High confidence' | 'Estimated' | 'Possible match';
+  glyphMetrics: {
+    avgCharWidth: number;
+    estimatedCharCount: number;
+    isMonospace: boolean;
+  };
+  warnings: string[];
 }
 
 export class FontDetector {
@@ -33,11 +43,12 @@ export class FontDetector {
     bounds: BoundingBox,
     text: string,
     platformHint?: string
-  ): TypographyEstimation {
+  ): FontAnalysisResult {
     const ctx = canvas.getContext('2d');
     const estimatedSize = Math.max(Math.round(bounds.height * 0.72), 10);
+    const warnings: string[] = [];
 
-    // 1. Color Sampling (Sample center pixel vs edge pixels)
+    // 1. Color and Weight Sampling
     let textColor = '#FFFFFF';
     let bgColor = '#000000';
     let weight = 400;
@@ -51,25 +62,50 @@ export class FontDetector {
         textColor = sampled.fgColor;
         bgColor = sampled.bgColor;
         weight = sampled.estimatedWeight;
-      } catch (e) {
+      } catch {
         // Fallback if cross-origin or canvas read error
       }
     }
 
-    // 2. Candidate Font Ranking based on platform and text characteristics
-    const candidates = this.rankFontCandidates(platformHint, text);
+    // 2. Glyph Width & Monospace Analysis
+    const charCount = Math.max(text.length, 1);
+    const avgCharWidth = bounds.width / charCount;
+    const isMonospace = text.length > 5 && avgCharWidth > 12 && avgCharWidth < 22;
+
+    // 3. Candidate Font Ranking with Platform-Aware Heuristics
+    const candidates = this.rankFontCandidates(platformHint, text, isMonospace);
+
+    const overallConfidence = candidates[0]?.confidence || 0.82;
+    const confidenceLabel =
+      overallConfidence >= 0.90
+        ? 'High confidence'
+        : overallConfidence >= 0.75
+        ? 'Estimated'
+        : 'Possible match';
+
+    if (overallConfidence < 0.85) {
+      warnings.push('Exact raster font could not be definitively matched; web font metric equivalent selected.');
+    }
 
     return {
       candidates,
       recommendedFamily: candidates[0]?.family || 'Inter, sans-serif',
       estimatedSize,
       estimatedWeight: weight,
-      color: textColor,
+      estimatedColor: textColor,
       backgroundColor: bgColor,
       lineHeight: 1.25,
       letterSpacing: 0,
       alignment: 'left',
-      confidence: 0.85
+      fallbackStack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      confidence: overallConfidence,
+      confidenceLabel,
+      glyphMetrics: {
+        avgCharWidth: Math.round(avgCharWidth * 10) / 10,
+        estimatedCharCount: charCount,
+        isMonospace
+      },
+      warnings
     };
   }
 
@@ -115,7 +151,6 @@ export class FontDetector {
       totalSamples++;
     }
 
-    // Foreground fill ratio determines weight
     const fillRatio = totalSamples > 0 ? foregroundPixelCount / totalSamples : 0.25;
     let estimatedWeight = 400;
     if (fillRatio > 0.45) {
@@ -136,41 +171,62 @@ export class FontDetector {
   }
 
   /**
-   * Ranks font families according to platform cues and typographic traits
+   * Ranks candidate font families according to platform cues, monospace traits, and glyph metrics
    */
-  private static rankFontCandidates(platformHint?: string, text?: string): FontCandidate[] {
+  private static rankFontCandidates(
+    platformHint?: string,
+    text?: string,
+    isMonospace?: boolean
+  ): FontCandidate[] {
     const p = platformHint?.toLowerCase();
 
     if (p === 'ios') {
       return [
-        { family: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif', category: 'sans-serif', confidence: 0.94 },
-        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.82 },
-        { family: 'Roboto, sans-serif', category: 'sans-serif', confidence: 0.70 }
+        { family: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif', category: 'sans-serif', confidence: 0.93, matchLabel: 'High confidence' },
+        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.84, matchLabel: 'Estimated' },
+        { family: 'Helvetica Neue, Helvetica, Arial, sans-serif', category: 'sans-serif', confidence: 0.76, matchLabel: 'Possible match' }
       ];
     }
 
     if (p === 'android') {
       return [
-        { family: 'Roboto, -apple-system, sans-serif', category: 'sans-serif', confidence: 0.92 },
-        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.84 },
-        { family: 'Open Sans, sans-serif', category: 'sans-serif', confidence: 0.71 }
+        { family: 'Roboto, -apple-system, sans-serif', category: 'sans-serif', confidence: 0.92, matchLabel: 'High confidence' },
+        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.82, matchLabel: 'Estimated' },
+        { family: 'Open Sans, sans-serif', category: 'sans-serif', confidence: 0.74, matchLabel: 'Possible match' }
       ];
     }
 
     if (p === 'whatsapp') {
       return [
-        { family: '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif', category: 'sans-serif', confidence: 0.95 },
-        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.86 },
-        { family: 'Roboto, sans-serif', category: 'sans-serif', confidence: 0.80 }
+        { family: '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif', category: 'sans-serif', confidence: 0.94, matchLabel: 'High confidence' },
+        { family: 'Inter, sans-serif', category: 'sans-serif', confidence: 0.85, matchLabel: 'Estimated' },
+        { family: 'Roboto, sans-serif', category: 'sans-serif', confidence: 0.78, matchLabel: 'Possible match' }
       ];
     }
 
-    // Generic defaults
+    if (isMonospace) {
+      return [
+        { family: 'JetBrains Mono, monospace', category: 'monospace', confidence: 0.92, matchLabel: 'High confidence' },
+        { family: 'Consolas, "Courier New", monospace', category: 'monospace', confidence: 0.85, matchLabel: 'Estimated' },
+        { family: 'monospace', category: 'monospace', confidence: 0.75, matchLabel: 'Possible match' }
+      ];
+    }
+
+    // Check if text looks like classical serif title (e.g. document, book)
+    const isSerifLikely = text && (text.includes('Chapter') || text.includes('MEMORANDUM') || text.length < 20);
+    if (isSerifLikely) {
+      return [
+        { family: 'Cinzel, Georgia, serif', category: 'serif', confidence: 0.88, matchLabel: 'Estimated' },
+        { family: 'Playfair Display, serif', category: 'serif', confidence: 0.82, matchLabel: 'Estimated' },
+        { family: 'Times New Roman, serif', category: 'serif', confidence: 0.75, matchLabel: 'Possible match' }
+      ];
+    }
+
+    // Universal default
     return [
-      { family: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', category: 'sans-serif', confidence: 0.88 },
-      { family: 'Roboto, sans-serif', category: 'sans-serif', confidence: 0.78 },
-      { family: 'Cinzel, serif', category: 'serif', confidence: 0.65 },
-      { family: 'JetBrains Mono, monospace', category: 'monospace', confidence: 0.60 }
+      { family: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', category: 'sans-serif', confidence: 0.88, matchLabel: 'High confidence' },
+      { family: 'Roboto, sans-serif', category: 'sans-serif', confidence: 0.80, matchLabel: 'Estimated' },
+      { family: 'system-ui, sans-serif', category: 'sans-serif', confidence: 0.72, matchLabel: 'Possible match' }
     ];
   }
 }

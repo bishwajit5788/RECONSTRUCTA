@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { SceneGraph, SceneNode } from '../types/sceneGraph';
+import { SceneNode } from '../types/sceneGraph';
 import { useEditorStore } from '../store/useEditorStore';
 
 describe('Scene Graph & Layer Store', () => {

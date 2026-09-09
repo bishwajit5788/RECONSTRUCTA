@@ -17,19 +17,27 @@ import {
   Download,
   Command,
   Shield,
-  Menu
+  Menu,
+  History,
+  Image as ImageIcon
 } from 'lucide-react';
 
 interface LuxuryHeaderProps {
   onFileUpload: (file: File) => void;
   onOpenExport: () => void;
   onOpenCommandPalette: () => void;
+  onOpenAssetGallery?: () => void;
+  onOpenVersionHistory?: () => void;
+  saveStatus?: string;
 }
 
 export const LuxuryHeader: React.FC<LuxuryHeaderProps> = ({
   onFileUpload,
   onOpenExport,
-  onOpenCommandPalette
+  onOpenCommandPalette,
+  onOpenAssetGallery,
+  onOpenVersionHistory,
+  saveStatus = 'Saved'
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -163,10 +171,44 @@ export const LuxuryHeader: React.FC<LuxuryHeaderProps> = ({
           onChange={handleFileChange}
         />
 
+        <span
+          style={{
+            fontSize: 11,
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--text-muted)',
+            marginRight: 4
+          }}
+          title="Autosave status"
+        >
+          {saveStatus}
+        </span>
+
+        {onOpenAssetGallery && (
+          <LuxuryButton
+            size="sm"
+            variant="ghost"
+            onClick={onOpenAssetGallery}
+            title="Open Asset Gallery"
+          >
+            <ImageIcon size={13} /> Assets
+          </LuxuryButton>
+        )}
+
+        {onOpenVersionHistory && (
+          <LuxuryButton
+            size="sm"
+            variant="ghost"
+            onClick={onOpenVersionHistory}
+            title="Version History & Checkpoints"
+          >
+            <History size={13} /> Versions
+          </LuxuryButton>
+        )}
+
         <LuxuryButton
           size="sm"
           onClick={() => fileInputRef.current?.click()}
-          title="Import Screenshot, PDF, EML, or DOCX"
+          title="Import Screenshot, PDF, EML, DOCX, or PPTX"
         >
           <Upload size={13} /> Import
         </LuxuryButton>

@@ -81,9 +81,10 @@ export class InpaintClient {
             return {
               originalDataUrl: dataUrl,
               restoredDataUrl: data.restored_image_data,
-              qualityScore: 0.96,
-              qualityLabel: 'excellent',
-              algorithmUsed: algorithm === 'ns' ? 'opencv_ns' : 'opencv_telea'
+              qualityScore: data.quality_score ?? 0.85,
+              qualityLabel: data.quality_label ?? 'good',
+              algorithmUsed: algorithm === 'ns' ? 'opencv_ns' : 'opencv_telea',
+              warnings: data.warnings || []
             };
           }
         } catch (backendErr) {

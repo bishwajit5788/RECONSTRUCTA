@@ -4,8 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { SceneGraph, SceneNode, ElementType, LayoutMode } from '../types/sceneGraph';
-import { PlatformId } from '../types/platform';
+import { SceneGraph, SceneNode } from '../types/sceneGraph';
 import { ReconstructaProject } from '../types/project';
 import { ConstraintSolver } from '../engine/layout/constraintSolver';
 
@@ -72,7 +71,7 @@ const initialSceneGraph: SceneGraph = {
   backgroundColor: '#08070A'
 };
 
-export const useEditorStore = create<EditorState>((set, get) => ({
+export const useEditorStore = create<EditorState>((set) => ({
   project: null,
   sceneGraph: initialSceneGraph,
   selectedNodeIds: [],

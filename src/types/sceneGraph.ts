@@ -28,7 +28,11 @@ export type ElementType =
   | 'media'
   | 'QR'
   | 'barcode'
-  | 'annotation';
+  | 'annotation'
+  | 'reaction'
+  | 'badge'
+  | 'divider'
+  | 'input';
 
 export type LayoutMode = 'fixed' | 'auto' | 'reflow' | 'anchor';
 
@@ -49,8 +53,9 @@ export interface InpaintPatch {
   originalDataUrl?: string;
   restoredDataUrl?: string;
   qualityScore: number; // 0.0 - 1.0
-  qualityLabel: 'excellent' | 'good' | 'acceptable' | 'poor';
+  qualityLabel: 'excellent' | 'good' | 'acceptable' | 'poor' | 'failed';
   algorithmUsed: 'local_canvas' | 'opencv_telea' | 'opencv_ns';
+  warnings?: string[];
 }
 
 export interface LayoutConstraints {
@@ -132,6 +137,8 @@ export interface SceneNode {
   platformHint?: string;
   semanticRole?: string;
   confidence: number; // 0.0 - 1.0
+  confidenceLabel?: 'HIGH' | 'MEDIUM' | 'LOW';
+  reviewRequired?: boolean;
   source: ElementSource;
   customData?: Record<string, any>;
 }

@@ -1,15 +1,22 @@
 /**
- * RECONSTRUCTA — ITERATIVE TYPOGRAPHY FITTER
+ * RECONSTRUCTA — MULTILINE ITERATIVE TYPOGRAPHY FITTER
  * Binary search fitting loop that iteratively tunes fontSize, letterSpacing, and lineHeight
- * to fit replacement text within desired or original visual bounds.
+ * to fit replacement single-line or multiline text within desired or original visual bounds.
+ * Supports word wrapping, character breaking for long strings, and baseline metrics.
  */
 
 import { BoundingBox } from '../../types/sceneGraph';
+
+export interface WrappedLine {
+  text: string;
+  width: number;
+}
 
 export interface IterativeFitResult {
   fontSize: number;
   letterSpacing: number;
   lineHeight: number;
+  lines: string[];
   renderedWidth: number;
   renderedHeight: number;
   iterations: number;
@@ -29,7 +36,57 @@ export class IterativeFitter {
   }
 
   /**
-   * Iteratively fits replacement text to match a target bounding box
+   * Breaks text into lines given a maximum target width and active font metrics
+   */
+  static breakLines(
+    text: string,
+    maxWidth: number,
+    font: string,
+    letterSpacing: number = 0
+  ): WrappedLine[] {
+    const ctx = this.getContext();
+    ctx.font = font;
+
+    const paragraphs = text.split(/\r?\n/);
+    const wrapped: WrappedLine[] = [];
+
+    for (const para of paragraphs) {
+      if (!para) {
+        wrapped.push({ text: '', width: 0 });
+        continue;
+      }
+
+      const words = para.split(' ');
+      let currentLine = '';
+      let currentWidth = 0;
+
+      for (let i = 0; i < words.length; i++) {
+        const word = words[i];
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        const testMetrics = ctx.measureText(testLine);
+        const testWidth = testMetrics.width + (testLine.length - 1) * letterSpacing;
+
+        if (testWidth <= maxWidth || !currentLine) {
+          currentLine = testLine;
+          currentWidth = testWidth;
+        } else {
+          wrapped.push({ text: currentLine, width: currentWidth });
+          currentLine = word;
+          const wordMetrics = ctx.measureText(word);
+          currentWidth = wordMetrics.width + (word.length - 1) * letterSpacing;
+        }
+      }
+
+      if (currentLine) {
+        wrapped.push({ text: currentLine, width: currentWidth });
+      }
+    }
+
+    return wrapped.length > 0 ? wrapped : [{ text, width: maxWidth }];
+  }
+
+  /**
+   * Iteratively fits multiline replacement text to match a target bounding box
    */
   static fitTextToBounds(
     text: string,
@@ -43,19 +100,22 @@ export class IterativeFitter {
     const targetW = targetBounds.width;
     const targetH = targetBounds.height;
 
-    // Initial estimation
+    // Check whether multiline or single line
+    const isSingleLine = !text.includes('\n') && text.length < 35 && targetH < 40;
+
     let minSize = 8;
     let maxSize = Math.max(targetH * 1.5, 48);
-    let currentSize = Math.max(Math.round(targetH * 0.72), 12);
+    let currentSize = Math.max(Math.round(targetH * (isSingleLine ? 0.72 : 0.45)), 12);
     let letterSpacing = 0;
-    let lineHeight = 1.2;
+    let lineHeight = 1.3;
 
     let iterations = 0;
     let bestDelta = Infinity;
-    let bestResult = {
+    let bestResult: IterativeFitResult = {
       fontSize: currentSize,
       letterSpacing,
       lineHeight,
+      lines: [text],
       renderedWidth: targetW,
       renderedHeight: targetH,
       iterations: 0,
@@ -64,15 +124,28 @@ export class IterativeFitter {
 
     while (iterations < maxIterations) {
       iterations++;
-      ctx.font = `${fontWeight} ${currentSize}px ${fontFamily}`;
+      const font = `${fontWeight} ${currentSize}px ${fontFamily}`;
+      ctx.font = font;
 
-      // Measure single line width
-      const metrics = ctx.measureText(text);
-      const measuredW = metrics.width + (text.length - 1) * letterSpacing;
-      const measuredH = currentSize * lineHeight;
+      let renderedW = 0;
+      let renderedH = 0;
+      let lines: string[] = [];
 
-      const deltaW = measuredW - targetW;
-      const absDelta = Math.abs(deltaW);
+      if (isSingleLine) {
+        const metrics = ctx.measureText(text);
+        renderedW = metrics.width + (text.length - 1) * letterSpacing;
+        renderedH = currentSize * lineHeight;
+        lines = [text];
+      } else {
+        const wrapped = this.breakLines(text, targetW, font, letterSpacing);
+        lines = wrapped.map((w) => w.text);
+        renderedW = Math.max(...wrapped.map((w) => w.width), 10);
+        renderedH = lines.length * (currentSize * lineHeight);
+      }
+
+      const deltaW = renderedW - targetW;
+      const deltaH = renderedH - targetH;
+      const absDelta = Math.max(Math.abs(deltaW), Math.abs(deltaH));
 
       if (absDelta < bestDelta) {
         bestDelta = absDelta;
@@ -80,8 +153,9 @@ export class IterativeFitter {
           fontSize: currentSize,
           letterSpacing,
           lineHeight,
-          renderedWidth: Math.round(measuredW),
-          renderedHeight: Math.round(measuredH),
+          lines,
+          renderedWidth: Math.round(renderedW),
+          renderedHeight: Math.round(renderedH),
           iterations,
           toleranceDelta: Math.round(bestDelta * 10) / 10
         };
@@ -92,30 +166,52 @@ export class IterativeFitter {
       }
 
       // Binary search adjustment for size
-      if (deltaW > 0) {
-        // Text overflows -> decrease font size or tighten letter spacing
+      if (deltaW > 0 || deltaH > 0) {
+        // Overflow -> reduce size
         maxSize = currentSize;
         currentSize = Math.max(minSize, Math.floor((minSize + currentSize) / 2));
         if (currentSize === minSize) {
-          // Fine tune letter spacing if size hits floor
-          letterSpacing = Math.max(letterSpacing - 0.2, -1.0);
+          letterSpacing = Math.max(letterSpacing - 0.2, -0.8);
         }
       } else {
-        // Text underflows -> increase font size
+        // Underflow -> increase size
         minSize = currentSize;
         currentSize = Math.min(maxSize, Math.ceil((currentSize + maxSize) / 2));
       }
 
       if (maxSize - minSize <= 1) {
-        // Final micro-step on letter spacing
-        const remainingDeficit = targetW - measuredW;
-        if (text.length > 1) {
-          letterSpacing = Math.max(-1.0, Math.min(2.0, remainingDeficit / (text.length - 1)));
-        }
         break;
       }
     }
 
     return bestResult;
+  }
+
+  /**
+   * Convenience helper to fit multiline text into bounding box dimensions
+   */
+  static fitText(
+    text: string,
+    width: number,
+    height: number,
+    options?: {
+      fontFamily?: string;
+      fontWeight?: number;
+      initialFontSize?: number;
+      minFontSize?: number;
+      maxFontSize?: number;
+    }
+  ): IterativeFitResult & { measuredWidth: number; measuredHeight: number } {
+    const res = this.fitTextToBounds(
+      text,
+      { x: 0, y: 0, width, height },
+      options?.fontFamily || 'Inter, sans-serif',
+      options?.fontWeight || 400
+    );
+    return {
+      ...res,
+      measuredWidth: res.renderedWidth,
+      measuredHeight: res.renderedHeight
+    };
   }
 }
