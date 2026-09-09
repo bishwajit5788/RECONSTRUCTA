@@ -1,18 +1,28 @@
-/**
- * RECONSTRUCTA — INTERACTIVE CANVAS VIEWPORT
- * 10%–800% zoom, smooth pan, luxury rulers, dynamic snapping guides,
- * all 8 transform resize handles (NW, N, NE, E, SE, S, SW, W), interactive rotation,
- * marquee multi-selection, group drag, keyboard movement, and double-click multiline editing.
- */
-
-import React, { useRef, useEffect, useState, MouseEvent, WheelEvent, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Maximize2, Minus, Plus, RotateCcw } from 'lucide-react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useHistoryStore } from '../../store/useHistoryStore';
 import { SceneNode } from '../../types/sceneGraph';
 
+/**
+ * RECONSTRUCTA document viewport.
+ *
+ * Important rendering rule: imported documents are real visual backgrounds.
+ * PDF.js produces a raster page plus editable text nodes; the old viewport only
+ * painted the text nodes, which made a PDF look like a black/empty canvas.
+ * This viewport paints originalImageUrl/background src first, then editable nodes.
+ */
 export const CanvasViewport: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
+  const fittedDocumentKeyRef = useRef<string>('');
+  const userAdjustedViewRef = useRef(false);
+  const [imageRevision, setImageRevision] = useState(0);
+  const [isPanning, setIsPanning] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number; node?: SceneNode; panX: number; panY: number } | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
 
   const {
     sceneGraph,
@@ -24,46 +34,69 @@ export const CanvasViewport: React.FC = () => {
     showRulers,
     showGrid,
     gridSize,
-    snapToGuides,
     setZoom,
     setPan,
     setSelectedNodes,
     updateNode,
-    addNode,
-    deleteNodes
   } = useEditorStore();
 
   const { pushState } = useHistoryStore();
+  const primarySelectedNode = selectedNodeIds.length === 1 ? sceneGraph.nodes[selectedNodeIds[0]] : null;
+  const ruler = showRulers ? 24 : 0;
 
-  // Panning & dragging state
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const clampZoom = (value: number) => Math.max(0.1, Math.min(8, value));
 
-  // Transform handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rotate' | 'move' | null
-  const [dragHandle, setDragHandle] = useState<string | null>(null);
-  const [dragStart, setDragStart] = useState<{
-    mouseX: number;
-    mouseY: number;
-    nodesInitial: Record<string, { x: number; y: number; width: number; height: number; rotation: number }>;
-  }>({ mouseX: 0, mouseY: 0, nodesInitial: {} });
+  const fitDocument = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || !sceneGraph.canvasWidth || !sceneGraph.canvasHeight) return;
 
-  // Marquee selection box
-  const [isMarquee, setIsMarquee] = useState(false);
-  const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
-  const [marqueeCurrent, setMarqueeCurrent] = useState<{ x: number; y: number } | null>(null);
+    const width = Math.max(240, container.clientWidth - 32 - ruler);
+    const height = Math.max(240, container.clientHeight - 32 - ruler);
+    const fittedZoom = Math.min(width / sceneGraph.canvasWidth, height / sceneGraph.canvasHeight, 1);
+    const safeZoom = clampZoom(fittedZoom || 0.5);
 
-  // Snap guide lines
-  const [activeGuideX, setActiveGuideX] = useState<number | null>(null);
-  const [activeGuideY, setActiveGuideY] = useState<number | null>(null);
+    setZoom(safeZoom);
+    setPan(
+      ruler + Math.max(16, (width - sceneGraph.canvasWidth * safeZoom) / 2),
+      ruler + Math.max(16, (height - sceneGraph.canvasHeight * safeZoom) / 2),
+    );
+  }, [sceneGraph.canvasWidth, sceneGraph.canvasHeight, ruler, setPan, setZoom]);
 
-  // Inline text editing state
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState('');
+  // Fit every newly imported document once. This prevents a full-size browser
+  // viewport from inheriting a stale zoom/pan from another document.
+  useEffect(() => {
+    const key = `${sceneGraph.canvasWidth}x${sceneGraph.canvasHeight}:${sceneGraph.originalImageUrl?.slice(0, 48) || ''}`;
+    if (!key.startsWith('0x0') && fittedDocumentKeyRef.current !== key) {
+      fittedDocumentKeyRef.current = key;
+      userAdjustedViewRef.current = false;
+      requestAnimationFrame(() => fitDocument());
+    }
+  }, [sceneGraph.canvasWidth, sceneGraph.canvasHeight, sceneGraph.originalImageUrl, fitDocument]);
 
-  const primarySelectedNode =
-    selectedNodeIds.length === 1 ? sceneGraph.nodes[selectedNodeIds[0]] : null;
+  // Re-fit only while the user has not manually changed the view. This keeps
+  // maximize/minimize and browser resizing stable without fighting manual zoom.
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      if (!userAdjustedViewRef.current) requestAnimationFrame(() => fitDocument());
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [fitDocument]);
 
-  // Render Scene to HTML5 Canvas
+  const getImage = useCallback((src: string) => {
+    const cached = imageCacheRef.current.get(src);
+    if (cached) return cached;
+
+    const image = new Image();
+    image.onload = () => setImageRevision((value) => value + 1);
+    image.onerror = () => setImageRevision((value) => value + 1);
+    image.src = src;
+    imageCacheRef.current.set(src, image);
+    return image;
+  }, []);
+
   const renderCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -71,59 +104,73 @@ export const CanvasViewport: React.FC = () => {
     if (!ctx) return;
 
     const { canvasWidth, canvasHeight, backgroundColor, nodes } = sceneGraph;
+    if (!canvasWidth || !canvasHeight) return;
 
     if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
     }
 
-    // Clear background
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
     ctx.fillStyle = backgroundColor || '#08070A';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // Optional Grid
-    if (showGrid) {
-      ctx.strokeStyle = 'rgba(212, 175, 55, 0.07)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < canvasWidth; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvasHeight);
-        ctx.stroke();
-      }
-      for (let y = 0; y < canvasHeight; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvasWidth, y);
-        ctx.stroke();
+    // Paint the actual imported document before editable overlays.
+    const backgroundNode = Object.values(nodes)
+      .filter((node) => node.visible && node.src && (node.type === 'background' || node.zIndex <= 1))
+      .sort((a, b) => a.zIndex - b.zIndex)[0];
+    const backgroundSrc = backgroundNode?.src || sceneGraph.originalImageUrl || sceneGraph.backgroundImageUrl;
+    if (backgroundSrc) {
+      const image = getImage(backgroundSrc);
+      if (image.complete && image.naturalWidth > 0) {
+        ctx.drawImage(image, 0, 0, canvasWidth, canvasHeight);
       }
     }
 
-    // Sort nodes by zIndex
+    if (showGrid) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.07)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= canvasWidth; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvasHeight); ctx.stroke();
+      }
+      for (let y = 0; y <= canvasHeight; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     const sortedNodes = Object.values(nodes)
-      .filter((n) => n.visible)
+      .filter((node) => node.visible)
       .sort((a, b) => a.zIndex - b.zIndex);
 
     for (const node of sortedNodes) {
+      // The flattened document background has already been painted above.
+      if (node.id === backgroundNode?.id || node.type === 'background') continue;
+
       ctx.save();
       ctx.globalAlpha = node.opacity ?? 1;
-
-      // Rotation around node center
       if (node.rotation) {
         ctx.translate(node.x + node.width / 2, node.y + node.height / 2);
         ctx.rotate((node.rotation * Math.PI) / 180);
         ctx.translate(-(node.x + node.width / 2), -(node.y + node.height / 2));
       }
 
-      // Container shapes & bubbles
-      if (node.backgroundColor || node.strokeColor) {
-        ctx.fillStyle = node.backgroundColor || 'transparent';
-        const radius = node.borderRadius || 6;
+      if (node.src) {
+        const image = getImage(node.src);
+        if (image.complete && image.naturalWidth > 0) {
+          ctx.drawImage(image, node.x, node.y, node.width, node.height);
+        }
+      }
 
+      if (node.backgroundColor || node.strokeColor) {
+        const radius = node.borderRadius || 6;
         ctx.beginPath();
         ctx.roundRect(node.x, node.y, node.width, node.height, radius);
-        if (node.backgroundColor) ctx.fill();
-
+        if (node.backgroundColor) {
+          ctx.fillStyle = node.backgroundColor;
+          ctx.fill();
+        }
         if (node.strokeColor) {
           ctx.strokeStyle = node.strokeColor;
           ctx.lineWidth = node.strokeWidth || 1;
@@ -131,443 +178,120 @@ export const CanvasViewport: React.FC = () => {
         }
       }
 
-      // Multiline Text Rendering with Word Wrapping
       if (node.content && node.id !== editingNodeId) {
         const fontSize = node.fontSize || 14;
-        const fontFamily = node.fontFamily || 'Inter, sans-serif';
-        const fontWeight = node.fontWeight || 400;
-
-        ctx.font = `${node.fontStyle || 'normal'} ${fontWeight} ${fontSize}px ${fontFamily}`;
+        const family = node.fontFamily || 'Inter, sans-serif';
+        ctx.font = `${node.fontStyle || 'normal'} ${node.fontWeight || 400} ${fontSize}px ${family}`;
         ctx.fillStyle = node.color || '#FFFFFF';
         ctx.textBaseline = 'top';
+        ctx.textAlign = node.alignment === 'center' ? 'center' : node.alignment === 'right' ? 'right' : 'left';
 
-        const paragraphs = node.content.split(/\r?\n/);
-        const maxLineWidth = Math.max(node.width - 8, 20);
-        const lines: string[] = [];
-
-        for (const para of paragraphs) {
-          if (!para) {
-            lines.push('');
-            continue;
-          }
-          const words = para.split(' ');
-          let currentLine = '';
-          for (const word of words) {
-            const testLine = currentLine ? `${currentLine} ${word}` : word;
-            if (ctx.measureText(testLine).width > maxLineWidth && currentLine) {
-              lines.push(currentLine);
-              currentLine = word;
-            } else {
-              currentLine = testLine;
-            }
-          }
-          if (currentLine) lines.push(currentLine);
-        }
-
+        const maxWidth = Math.max(node.width - 8, 20);
         const lineHeight = fontSize * (node.lineHeight || 1.25);
-        lines.forEach((lineText, idx) => {
-          const lineY = node.y + 2 + idx * lineHeight;
-          if (node.alignment === 'center') {
-            ctx.textAlign = 'center';
-            ctx.fillText(lineText, node.x + node.width / 2, lineY);
-          } else if (node.alignment === 'right') {
-            ctx.textAlign = 'right';
-            ctx.fillText(lineText, node.x + node.width - 4, lineY);
-          } else {
-            ctx.textAlign = 'left';
-            ctx.fillText(lineText, node.x + 4, lineY);
+        const lines: string[] = [];
+        for (const paragraph of node.content.split(/\r?\n/)) {
+          if (!paragraph) { lines.push(''); continue; }
+          let current = '';
+          for (const word of paragraph.split(' ')) {
+            const candidate = current ? `${current} ${word}` : word;
+            if (current && ctx.measureText(candidate).width > maxWidth) {
+              lines.push(current);
+              current = word;
+            } else current = candidate;
           }
+          if (current) lines.push(current);
+        }
+        lines.forEach((line, index) => {
+          const x = node.alignment === 'center' ? node.x + node.width / 2 : node.alignment === 'right' ? node.x + node.width - 4 : node.x + 4;
+          ctx.fillText(line, x, node.y + 2 + index * lineHeight);
         });
       }
-
       ctx.restore();
     }
-  }, [sceneGraph, showGrid, gridSize, editingNodeId]);
+  }, [sceneGraph, showGrid, gridSize, editingNodeId, getImage, imageRevision]);
 
   useEffect(() => {
     renderCanvas();
   }, [renderCanvas]);
 
-  // Transform matrix inverse hit-testing respecting rotation
-  const getTopNodeAtPoint = (canvasX: number, canvasY: number): SceneNode | null => {
-    const sorted = Object.values(sceneGraph.nodes)
-      .filter((n) => n.visible)
-      .sort((a, b) => b.zIndex - a.zIndex); // Topmost first
-
-    for (const node of sorted) {
-      const cx = node.x + node.width / 2;
-      const cy = node.y + node.height / 2;
-      const rotRad = -((node.rotation || 0) * Math.PI) / 180;
-
-      // Rotate point back into node's local non-rotated axis
-      const dx = canvasX - cx;
-      const dy = canvasY - cy;
-      const localX = cx + (dx * Math.cos(rotRad) - dy * Math.sin(rotRad));
-      const localY = cy + (dx * Math.sin(rotRad) + dy * Math.cos(rotRad));
-
-      if (
-        localX >= node.x &&
-        localX <= node.x + node.width &&
-        localY >= node.y &&
-        localY <= node.y + node.height
-      ) {
-        return node;
-      }
-    }
-    return null;
-  };
-
-  // Keyboard navigation: Arrow movement, Delete, Cmd+A, Cmd+D
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (editingNodeId) return; // Do not intercept typing during inline edit
-
-      const hasSelection = selectedNodeIds.length > 0;
-
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        const unlockedIds = Object.values(sceneGraph.nodes)
-          .filter((n) => !n.locked && n.visible)
-          .map((n) => n.id);
-        setSelectedNodes(unlockedIds);
-        return;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd' && hasSelection) {
-        e.preventDefault();
-        pushState(sceneGraph);
-        const newIds: string[] = [];
-        for (const id of selectedNodeIds) {
-          const original = sceneGraph.nodes[id];
-          if (original) {
-            const copyId = `copy_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-            const copyNode: SceneNode = {
-              ...original,
-              id: copyId,
-              name: `${original.name} Copy`,
-              x: original.x + 20,
-              y: original.y + 20,
-              zIndex: original.zIndex + 1
-            };
-            addNode(copyNode);
-            newIds.push(copyId);
-          }
-        }
-        setSelectedNodes(newIds);
-        return;
-      }
-
-      if ((e.key === 'Backspace' || e.key === 'Delete') && hasSelection) {
-        e.preventDefault();
-        pushState(sceneGraph);
-        deleteNodes(selectedNodeIds);
-        return;
-      }
-
-      // Arrow keys movement
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && hasSelection) {
-        e.preventDefault();
-        const step = e.shiftKey ? 10 : 1;
-        let dx = 0;
-        let dy = 0;
-        if (e.key === 'ArrowUp') dy = -step;
-        if (e.key === 'ArrowDown') dy = step;
-        if (e.key === 'ArrowLeft') dx = -step;
-        if (e.key === 'ArrowRight') dx = step;
-
-        for (const id of selectedNodeIds) {
-          const node = sceneGraph.nodes[id];
-          if (node && !node.locked) {
-            updateNode(id, { x: node.x + dx, y: node.y + dy }, false);
-          }
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingNodeId, selectedNodeIds, sceneGraph, setSelectedNodes, pushState, addNode, deleteNodes, updateNode]);
-
-  // Zoom on wheel (clamped 10% to 800%)
-  const handleWheel = (e: WheelEvent<HTMLDivElement>) => {
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-      setZoom(zoom * zoomFactor);
-    } else {
-      setPan(panX - e.deltaX, panY - e.deltaY);
-    }
-  };
-
-  // Convert client mouse coordinates to canvas-space coordinates
-  const clientToCanvasCoord = (clientX: number, clientY: number) => {
-    if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    const vx = clientX - rect.left - panX;
-    const vy = clientY - rect.top - panY;
+  const canvasPoint = (clientX: number, clientY: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
     return {
-      x: vx / zoom,
-      y: vy / zoom
+      x: (clientX - rect.left - panX) / zoom,
+      y: (clientY - rect.top - panY) / zoom,
     };
   };
 
-  // Start Pan / Drag / Marquee Selection
-  const handleMouseDown = (e: MouseEvent<HTMLDivElement>) => {
-    // Left-click pan tool or middle mouse button
-    if (activeTool === 'pan' || e.button === 1) {
+  const nodeAtPoint = (x: number, y: number) => {
+    return Object.values(sceneGraph.nodes)
+      .filter((node) => node.visible)
+      .sort((a, b) => b.zIndex - a.zIndex)
+      .find((node) => x >= node.x && x <= node.x + node.width && y >= node.y && y <= node.y + node.height) || null;
+  };
+
+  const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button === 1 || activeTool === 'pan') {
+      userAdjustedViewRef.current = true;
       setIsPanning(true);
-      setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+      setDragStart({ x: event.clientX, y: event.clientY, panX, panY });
       return;
     }
+    if (event.button !== 0) return;
 
-    if (e.button !== 0) return; // Only primary button
-
-    const { x: cx, y: cy } = clientToCanvasCoord(e.clientX, e.clientY);
-    const clickedNode = getTopNodeAtPoint(cx, cy);
-
-    if (clickedNode) {
-      if (clickedNode.locked) {
-        // Locked nodes can be selected to view properties, but not dragged
-        setSelectedNodes([clickedNode.id]);
-        return;
-      }
-
-      // Multi-select with Shift or Cmd/Ctrl
-      if (e.shiftKey || e.metaKey || e.ctrlKey) {
-        if (selectedNodeIds.includes(clickedNode.id)) {
-          setSelectedNodes(selectedNodeIds.filter((id) => id !== clickedNode.id));
-        } else {
-          setSelectedNodes([...selectedNodeIds, clickedNode.id]);
-        }
-      } else if (!selectedNodeIds.includes(clickedNode.id)) {
-        setSelectedNodes([clickedNode.id]);
-      }
-
-      // Initiate move operation
-      setDragHandle('move');
-      const nodesInitial: Record<string, { x: number; y: number; width: number; height: number; rotation: number }> = {};
-      const activeIds = selectedNodeIds.includes(clickedNode.id) ? selectedNodeIds : [clickedNode.id];
-      for (const id of activeIds) {
-        const n = sceneGraph.nodes[id];
-        if (n && !n.locked) {
-          nodesInitial[id] = { x: n.x, y: n.y, width: n.width, height: n.height, rotation: n.rotation || 0 };
-        }
-      }
-
-      setDragStart({ mouseX: e.clientX, mouseY: e.clientY, nodesInitial });
+    const point = canvasPoint(event.clientX, event.clientY);
+    const node = nodeAtPoint(point.x, point.y);
+    if (!node) {
+      setSelectedNodes([]);
+      return;
+    }
+    setSelectedNodes(event.shiftKey ? [...selectedNodeIds.filter((id) => id !== node.id), node.id] : [node.id]);
+    if (!node.locked) {
       pushState(sceneGraph);
-    } else {
-      // Empty canvas clicked: initiate marquee rubber-band selection or deselect
-      if (!e.shiftKey && !e.metaKey && !e.ctrlKey) {
-        setSelectedNodes([]);
-      }
-      setIsMarquee(true);
-      setMarqueeStart({ x: cx, y: cy });
-      setMarqueeCurrent({ x: cx, y: cy });
+      setDragStart({ x: event.clientX, y: event.clientY, panX: node.x, panY: node.y, node });
     }
   };
 
-  // Dragging: Panning, Moving, 8-Handle Resizing, Rotation, or Marquee
-  const handleMouseMove = (e: MouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragStart) return;
     if (isPanning) {
-      setPan(e.clientX - panStart.x, e.clientY - panStart.y);
+      setPan(dragStart.panX + event.clientX - dragStart.x, dragStart.panY + event.clientY - dragStart.y);
       return;
     }
-
-    if (isMarquee && marqueeStart) {
-      const { x: cx, y: cy } = clientToCanvasCoord(e.clientX, e.clientY);
-      setMarqueeCurrent({ x: cx, y: cy });
-      return;
-    }
-
-    if (!dragHandle) return;
-
-    const dx = (e.clientX - dragStart.mouseX) / zoom;
-    const dy = (e.clientY - dragStart.mouseY) / zoom;
-
-    // 1. Moving selected node(s)
-    if (dragHandle === 'move') {
-      let snapX = null;
-      let snapY = null;
-
-      for (const [id, initial] of Object.entries(dragStart.nodesInitial)) {
-        let newX = Math.round(initial.x + dx);
-        let newY = Math.round(initial.y + dy);
-
-        // Magnetic Snapping Guides
-        if (snapToGuides) {
-          const snapDistance = 6;
-          for (const other of Object.values(sceneGraph.nodes)) {
-            if (other.id === id || selectedNodeIds.includes(other.id)) continue;
-            if (Math.abs(newX - other.x) < snapDistance) {
-              newX = other.x;
-              snapX = other.x;
-            }
-            if (Math.abs(newY - other.y) < snapDistance) {
-              newY = other.y;
-              snapY = other.y;
-            }
-          }
-        }
-
-        updateNode(id, { x: newX, y: newY }, false);
-      }
-
-      setActiveGuideX(snapX);
-      setActiveGuideY(snapY);
-      return;
-    }
-
-    // 2. Rotation
-    if (dragHandle === 'rotate' && primarySelectedNode) {
-      const initial = dragStart.nodesInitial[primarySelectedNode.id];
-      if (!initial) return;
-
-      const centerX = initial.x + initial.width / 2;
-      const centerY = initial.y + initial.height / 2;
-      const { x: mouseCanvasX, y: mouseCanvasY } = clientToCanvasCoord(e.clientX, e.clientY);
-
-      const rad = Math.atan2(mouseCanvasY - centerY, mouseCanvasX - centerX);
-      let deg = Math.round((rad * 180) / Math.PI) + 90;
-      if (deg < 0) deg += 360;
-
-      // Snapping to 0, 45, 90, 135, 180, 225, 270, 315, 360
-      const snapAngles = [0, 45, 90, 135, 180, 225, 270, 315, 360];
-      for (const sa of snapAngles) {
-        if (Math.abs(deg - sa) < 4) {
-          deg = sa % 360;
-          break;
-        }
-      }
-
-      updateNode(primarySelectedNode.id, { rotation: deg }, false);
-      return;
-    }
-
-    // 3. All 8 Resize Handles (NW, N, NE, E, SE, S, SW, W)
-    if (primarySelectedNode && dragStart.nodesInitial[primarySelectedNode.id]) {
-      const init = dragStart.nodesInitial[primarySelectedNode.id];
-      let newX = init.x;
-      let newY = init.y;
-      let newW = init.width;
-      let newH = init.height;
-
-      const isProportional = e.shiftKey;
-      const initialRatio = init.width / Math.max(init.height, 1);
-
-      // E
-      if (dragHandle.includes('e')) {
-        newW = Math.max(20, init.width + dx);
-      }
-      // W
-      if (dragHandle.includes('w')) {
-        const potentialW = init.width - dx;
-        if (potentialW >= 20) {
-          newW = potentialW;
-          newX = init.x + dx;
-        }
-      }
-      // S
-      if (dragHandle.includes('s')) {
-        newH = Math.max(16, init.height + dy);
-      }
-      // N
-      if (dragHandle.includes('n')) {
-        const potentialH = init.height - dy;
-        if (potentialH >= 16) {
-          newH = potentialH;
-          newY = init.y + dy;
-        }
-      }
-
-      // Proportional resizing adjustment
-      if (isProportional && (dragHandle === 'se' || dragHandle === 'nw' || dragHandle === 'ne' || dragHandle === 'sw')) {
-        newH = Math.round(newW / initialRatio);
-      }
-
-      updateNode(
-        primarySelectedNode.id,
-        {
-          x: Math.round(newX),
-          y: Math.round(newY),
-          width: Math.round(newW),
-          height: Math.round(newH)
-        },
-        true
-      );
-    }
+    if (!dragStart.node || dragStart.node.locked) return;
+    const dx = (event.clientX - dragStart.x) / zoom;
+    const dy = (event.clientY - dragStart.y) / zoom;
+    updateNode(dragStart.node.id, { x: Math.round(dragStart.panX + dx), y: Math.round(dragStart.panY + dy) }, false);
   };
 
   const handleMouseUp = () => {
     setIsPanning(false);
-    setDragHandle(null);
-    setActiveGuideX(null);
-    setActiveGuideY(null);
-
-    // Finalize Marquee Selection
-    if (isMarquee && marqueeStart && marqueeCurrent) {
-      const minX = Math.min(marqueeStart.x, marqueeCurrent.x);
-      const maxX = Math.max(marqueeStart.x, marqueeCurrent.x);
-      const minY = Math.min(marqueeStart.y, marqueeCurrent.y);
-      const maxY = Math.max(marqueeStart.y, marqueeCurrent.y);
-
-      // Only select if dragged more than 4px
-      if (maxX - minX > 4 || maxY - minY > 4) {
-        const enclosedIds = Object.values(sceneGraph.nodes)
-          .filter(
-            (n) =>
-              !n.locked &&
-              n.visible &&
-              n.x + n.width >= minX &&
-              n.x <= maxX &&
-              n.y + n.height >= minY &&
-              n.y <= maxY
-          )
-          .map((n) => n.id);
-        setSelectedNodes(enclosedIds);
-      }
-      setIsMarquee(false);
-      setMarqueeStart(null);
-      setMarqueeCurrent(null);
-    }
+    setDragStart(null);
   };
 
-  // Double-click to inline edit text
-  const handleDoubleClick = () => {
-    if (primarySelectedNode && primarySelectedNode.content !== undefined && !primarySelectedNode.locked) {
-      setEditingNodeId(primarySelectedNode.id);
-      setEditingText(primarySelectedNode.content);
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      setPan(panX - event.deltaX, panY - event.deltaY);
+      userAdjustedViewRef.current = true;
+      return;
     }
+    event.preventDefault();
+    userAdjustedViewRef.current = true;
+    const nextZoom = clampZoom(zoom * (event.deltaY < 0 ? 1.1 : 0.9));
+    setZoom(nextZoom);
   };
 
-  const handleTextEditCommit = () => {
-    if (editingNodeId) {
-      pushState(sceneGraph);
-      updateNode(editingNodeId, { content: editingText }, true);
-      setEditingNodeId(null);
-    }
+  const startEditing = () => {
+    if (!primarySelectedNode || primarySelectedNode.locked || primarySelectedNode.content === undefined) return;
+    setEditingNodeId(primarySelectedNode.id);
+    setEditingText(primarySelectedNode.content);
   };
 
-  // Helper to initiate resize handle drag
-  const startHandleDrag = (handle: string, e: MouseEvent) => {
-    e.stopPropagation();
-    if (!primarySelectedNode || primarySelectedNode.locked) return;
-
-    setDragHandle(handle);
-    setDragStart({
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      nodesInitial: {
-        [primarySelectedNode.id]: {
-          x: primarySelectedNode.x,
-          y: primarySelectedNode.y,
-          width: primarySelectedNode.width,
-          height: primarySelectedNode.height,
-          rotation: primarySelectedNode.rotation || 0
-        }
-      }
-    });
+  const commitEditing = () => {
+    if (!editingNodeId) return;
     pushState(sceneGraph);
+    updateNode(editingNodeId, { content: editingText }, true);
+    setEditingNodeId(null);
   };
 
   return (
@@ -578,247 +302,69 @@ export const CanvasViewport: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onDoubleClick={handleDoubleClick}
+      onMouseLeave={handleMouseUp}
+      onDoubleClick={startEditing}
       style={{ cursor: isPanning ? 'grabbing' : activeTool === 'pan' ? 'grab' : 'default' }}
     >
-      {/* Top Luxury Ruler */}
-      {showRulers && (
-        <>
-          <div className="canvas-ruler-corner" />
-          <div className="canvas-ruler-horizontal">
-            <svg width="100%" height="22">
-              {Array.from({ length: 100 }).map((_, i) => (
-                <g key={i}>
-                  <line
-                    x1={i * 50 * zoom + panX}
-                    y1={12}
-                    x2={i * 50 * zoom + panX}
-                    y2={22}
-                    stroke="rgba(212, 175, 55, 0.4)"
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={i * 50 * zoom + panX + 4}
-                    y={11}
-                    fill="#8C6A20"
-                    fontSize={9}
-                    fontFamily="JetBrains Mono, monospace"
-                  >
-                    {i * 50}
-                  </text>
-                </g>
-              ))}
-            </svg>
-          </div>
-          {/* Left Luxury Ruler */}
-          <div className="canvas-ruler-vertical">
-            <svg width="22" height="100%">
-              {Array.from({ length: 100 }).map((_, i) => (
-                <g key={i}>
-                  <line
-                    x1={12}
-                    y1={i * 50 * zoom + panY}
-                    x2={22}
-                    y2={i * 50 * zoom + panY}
-                    stroke="rgba(212, 175, 55, 0.4)"
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={2}
-                    y={i * 50 * zoom + panY + 12}
-                    fill="#8C6A20"
-                    fontSize={8.5}
-                    fontFamily="JetBrains Mono, monospace"
-                  >
-                    {i * 50}
-                  </text>
-                </g>
-              ))}
-            </svg>
-          </div>
-        </>
-      )}
+      <div className="document-viewport-toolbar" style={{
+        position: 'absolute', top: 10, right: 12, zIndex: 100, display: 'flex', alignItems: 'center', gap: 6,
+        padding: '5px 7px', borderRadius: 10, background: 'rgba(12,10,16,.92)', border: '1px solid rgba(212,175,55,.22)',
+        boxShadow: '0 10px 30px rgba(0,0,0,.35)', backdropFilter: 'blur(12px)'
+      }}>
+        <button aria-label="Zoom out" className="tool-button" onClick={() => { userAdjustedViewRef.current = true; setZoom(clampZoom(zoom * 0.9)); }}><Minus size={14} /></button>
+        <span style={{ minWidth: 52, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--gold-light)' }}>{Math.round(zoom * 100)}%</span>
+        <button aria-label="Zoom in" className="tool-button" onClick={() => { userAdjustedViewRef.current = true; setZoom(clampZoom(zoom * 1.1)); }}><Plus size={14} /></button>
+        <button aria-label="Fit document" className="tool-button" onClick={() => { userAdjustedViewRef.current = false; fitDocument(); }}><Maximize2 size={14} /></button>
+        <button aria-label="Reset view" className="tool-button" onClick={() => { userAdjustedViewRef.current = false; fitDocument(); }}><RotateCcw size={14} /></button>
+      </div>
 
-      {/* Dynamic Magnetic Snapping Guide Lines */}
-      {activeGuideX !== null && (
-        <div
-          className="canvas-guide-line-x"
-          style={{ left: `${activeGuideX * zoom + panX}px` }}
-        />
-      )}
-      {activeGuideY !== null && (
-        <div
-          className="canvas-guide-line-y"
-          style={{ top: `${activeGuideY * zoom + panY}px` }}
-        />
-      )}
+      {showRulers && <>
+        <div className="canvas-ruler-corner" />
+        <div className="canvas-ruler-horizontal"><span style={{ paddingLeft: 8 }}>DOCUMENT</span></div>
+        <div className="canvas-ruler-vertical"><span style={{ writingMode: 'vertical-rl', paddingTop: 8 }}>PAGE</span></div>
+      </>}
 
-      {/* Marquee Rubber-band Selection Box */}
-      {isMarquee && marqueeStart && marqueeCurrent && (
-        <div
-          style={{
-            position: 'absolute',
-            left: `${Math.min(marqueeStart.x, marqueeCurrent.x) * zoom + panX}px`,
-            top: `${Math.min(marqueeStart.y, marqueeCurrent.y) * zoom + panY}px`,
-            width: `${Math.abs(marqueeCurrent.x - marqueeStart.x) * zoom}px`,
-            height: `${Math.abs(marqueeCurrent.y - marqueeStart.y) * zoom}px`,
-            border: '1px dashed var(--gold-antique)',
-            background: 'rgba(212, 175, 55, 0.12)',
-            pointerEvents: 'none',
-            zIndex: 40
-          }}
-        />
-      )}
+      <div style={{
+        position: 'absolute', left: panX, top: panY, width: sceneGraph.canvasWidth, height: sceneGraph.canvasHeight,
+        transform: `scale(${zoom})`, transformOrigin: '0 0', background: '#fff',
+        boxShadow: '0 18px 70px rgba(0,0,0,.62), 0 0 0 1px rgba(212,175,55,.22)', overflow: 'visible'
+      }}>
+        <canvas ref={canvasRef} style={{ display: 'block', width: sceneGraph.canvasWidth, height: sceneGraph.canvasHeight }} />
 
-      {/* Scaled Canvas Surface */}
-      <div
-        style={{
-          position: 'absolute',
-          left: `${panX}px`,
-          top: `${panY}px`,
-          transform: `scale(${zoom})`,
-          transformOrigin: '0 0',
-          boxShadow: '0 12px 48px rgba(0, 0, 0, 0.9), 0 0 1px rgba(212, 175, 55, 0.3)'
-        }}
-      >
-        <canvas ref={canvasRef} />
+        {selectedNodeIds.map((id) => {
+          const node = sceneGraph.nodes[id];
+          if (!node?.visible) return null;
+          return <div key={id} className="canvas-selection-box" style={{ left: node.x, top: node.y, width: node.width, height: node.height, transform: `rotate(${node.rotation || 0}deg)`, transformOrigin: 'center center' }} />;
+        })}
 
-        {/* Highlight Outlines for Multi-selection */}
-        {selectedNodeIds.length > 1 &&
-          selectedNodeIds.map((id) => {
-            const n = sceneGraph.nodes[id];
-            if (!n || !n.visible) return null;
-            return (
-              <div
-                key={id}
-                style={{
-                  position: 'absolute',
-                  left: `${n.x}px`,
-                  top: `${n.y}px`,
-                  width: `${n.width}px`,
-                  height: `${n.height}px`,
-                  border: '1px dashed var(--gold-antique)',
-                  transform: `rotate(${n.rotation || 0}deg)`,
-                  transformOrigin: 'center center',
-                  pointerEvents: 'none',
-                  zIndex: 28
-                }}
-              />
-            );
-          })}
-
-        {/* Primary Selected Element: Bounding Box, 8 Handles & Rotation Knob */}
-        {primarySelectedNode && editingNodeId !== primarySelectedNode.id && (
-          <div
-            className="canvas-selection-box"
-            style={{
-              left: `${primarySelectedNode.x}px`,
-              top: `${primarySelectedNode.y}px`,
-              width: `${primarySelectedNode.width}px`,
-              height: `${primarySelectedNode.height}px`,
-              transform: `rotate(${primarySelectedNode.rotation || 0}deg)`,
-              transformOrigin: 'center center'
-            }}
-          >
-            {!primarySelectedNode.locked && (
-              <>
-                {/* Rotation Stem & Knob */}
-                <div className="canvas-rotate-stem" style={{ left: '50%', top: '-20px', height: '20px' }} />
-                <div
-                  className="canvas-rotate-handle"
-                  style={{ left: '50%', top: '-24px' }}
-                  onMouseDown={(e) => startHandleDrag('rotate', e)}
-                  title="Drag to rotate"
-                />
-
-                {/* All 8 Resize Handles */}
-                {/* NW */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: 0, left: 0, cursor: 'nwse-resize' }}
-                  onMouseDown={(e) => startHandleDrag('nw', e)}
-                />
-                {/* N */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: 0, left: '50%', cursor: 'ns-resize' }}
-                  onMouseDown={(e) => startHandleDrag('n', e)}
-                />
-                {/* NE */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: 0, left: '100%', cursor: 'nesw-resize' }}
-                  onMouseDown={(e) => startHandleDrag('ne', e)}
-                />
-                {/* E */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: '50%', left: '100%', cursor: 'ew-resize' }}
-                  onMouseDown={(e) => startHandleDrag('e', e)}
-                />
-                {/* SE */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: '100%', left: '100%', cursor: 'nwse-resize' }}
-                  onMouseDown={(e) => startHandleDrag('se', e)}
-                />
-                {/* S */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: '100%', left: '50%', cursor: 'ns-resize' }}
-                  onMouseDown={(e) => startHandleDrag('s', e)}
-                />
-                {/* SW */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: '100%', left: 0, cursor: 'nesw-resize' }}
-                  onMouseDown={(e) => startHandleDrag('sw', e)}
-                />
-                {/* W */}
-                <div
-                  className="canvas-handle"
-                  style={{ top: '50%', left: 0, cursor: 'ew-resize' }}
-                  onMouseDown={(e) => startHandleDrag('w', e)}
-                />
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Inline Double-Click Text Editor Overlay */}
         {editingNodeId && primarySelectedNode && (
           <textarea
             autoFocus
             value={editingText}
-            onChange={(e) => setEditingText(e.target.value)}
-            onBlur={handleTextEditCommit}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                setEditingNodeId(null);
-              }
+            onChange={(event) => setEditingText(event.target.value)}
+            onBlur={commitEditing}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setEditingNodeId(null);
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') commitEditing();
             }}
             style={{
-              position: 'absolute',
-              left: `${primarySelectedNode.x}px`,
-              top: `${primarySelectedNode.y}px`,
-              width: `${Math.max(primarySelectedNode.width, 120)}px`,
-              height: `${Math.max(primarySelectedNode.height, 40)}px`,
-              fontFamily: primarySelectedNode.fontFamily || 'Inter, sans-serif',
-              fontSize: `${primarySelectedNode.fontSize || 14}px`,
-              fontWeight: primarySelectedNode.fontWeight || 400,
-              color: primarySelectedNode.color || '#FFFFFF',
-              background: 'rgba(8, 7, 10, 0.95)',
-              border: '1px solid var(--gold-antique)',
-              borderRadius: '4px',
-              padding: '2px 4px',
-              resize: 'both',
-              zIndex: 50,
-              outline: 'none',
-              boxShadow: '0 0 16px rgba(212, 175, 55, 0.5)'
+              position: 'absolute', left: primarySelectedNode.x, top: primarySelectedNode.y,
+              width: Math.max(primarySelectedNode.width, 120), height: Math.max(primarySelectedNode.height, 48),
+              fontFamily: primarySelectedNode.fontFamily || 'Inter, sans-serif', fontSize: primarySelectedNode.fontSize || 14,
+              fontWeight: primarySelectedNode.fontWeight || 400, color: primarySelectedNode.color || '#111',
+              background: 'rgba(255,255,255,.97)', border: '1px solid var(--gold-antique)', borderRadius: 4,
+              padding: 5, resize: 'both', zIndex: 120, outline: 'none', boxShadow: '0 0 18px rgba(212,175,55,.38)'
             }}
           />
         )}
       </div>
+
+      {!sceneGraph.originalImageUrl && !sceneGraph.backgroundImageUrl && Object.keys(sceneGraph.nodes).length > 0 && (
+        <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', color: 'var(--text-muted)', textAlign: 'center', pointerEvents: 'none' }}>
+          <div style={{ fontFamily: 'var(--font-heading)', color: 'var(--gold-light)', fontSize: 18 }}>Editable document surface</div>
+          <div style={{ marginTop: 6, fontSize: 12 }}>No flattened preview is available for this source.</div>
+        </div>
+      )}
     </div>
   );
 };
