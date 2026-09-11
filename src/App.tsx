@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Upload, FileImage, Type, Layers3, Settings2, Sparkles, Eye, ZoomIn, ZoomOut, Undo2, Redo2, Download, MousePointer2, Box, ScanText, Wand2, ChevronRight } from 'lucide-react'
+import { Upload, FileImage, Type, Layers3, Settings2, Sparkles, Eye, ZoomIn, ZoomOut, Undo2, Redo2, Download, MousePointer2, Box, ScanText, Wand2, ChevronRight, ShieldCheck } from 'lucide-react'
 import './App.css'
 
 type Layer = { id: string; name: string; type: string; visible: boolean }
@@ -18,11 +18,17 @@ export function App() {
   const [zoom, setZoom] = useState(100)
   const [fileName, setFileName] = useState('Untitled reconstruction')
   const [status, setStatus] = useState('Ready')
+  const [dragging, setDragging] = useState(false)
 
   const selectedLayer = useMemo(() => layers.find((l) => l.id === selected), [layers, selected])
 
   const importFile = (file?: File) => {
     if (!file) return
+    const supported = /\.(png|jpe?g|webp|pdf|eml|docx|pptx)$/i.test(file.name)
+    if (!supported) {
+      setStatus('Unsupported file type')
+      return
+    }
     setFileName(file.name.replace(/\.[^.]+$/, ''))
     setStatus(`Imported ${file.name}`)
   }
@@ -40,7 +46,7 @@ export function App() {
         </div>
         <div className="document-name">{fileName}<span className="saved-dot">●</span></div>
         <div className="top-actions">
-          <span className="mode-pill"><span /> LOCAL MODE</span>
+          <span className="mode-pill"><span /> LOCAL DEMO</span>
           <button className="icon-btn" title="Undo"><Undo2 size={16}/></button>
           <button className="icon-btn" title="Redo"><Redo2 size={16}/></button>
           <button className="gold-btn"><Download size={15}/> Export</button>
@@ -49,10 +55,16 @@ export function App() {
 
       <main className="workspace">
         <aside className="leftbar">
-          <button className="import-card" onClick={() => inputRef.current?.click()}>
-            <Upload size={20}/><strong>Import & Reconstruct</strong><span>Image · PDF · EML · DOCX · PPTX</span>
+          <button
+            className={`import-card ${dragging ? 'dragging' : ''}`}
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setDragging(false); importFile(e.dataTransfer.files?.[0]) }}
+          >
+            <Upload size={20}/><strong>{dragging ? 'Drop to import' : 'Import & Reconstruct'}</strong><span>Drag & drop · Image · PDF · EML · DOCX · PPTX</span>
           </button>
-          <input ref={inputRef} hidden type="file" accept="image/*,.pdf,.eml,.docx,.pptx" onChange={(e) => importFile(e.target.files?.[0])}/>
+          <input ref={inputRef} hidden type="file" accept="image/*,.pdf,.eml,.docx,.pptx" onChange={(e) => { importFile(e.target.files?.[0]); e.currentTarget.value = '' }}/>
           <div className="section-label">TOOLS</div>
           <Tool icon={<MousePointer2/>} label="Select" active />
           <Tool icon={<Box/>} label="Elements" />
@@ -61,7 +73,7 @@ export function App() {
           <Tool icon={<Wand2/>} label="Inpainting" />
           <Tool icon={<Sparkles/>} label="Reconstruct" />
           <div className="left-spacer" />
-          <div className="privacy-card"><Eye size={15}/><div><b>Provenance on</b><span>Edited / mockup exports stay traceable.</span></div></div>
+          <div className="privacy-card"><ShieldCheck size={15}/><div><b>Provenance on</b><span>Edited / mockup exports stay traceable.</span></div></div>
         </aside>
 
         <section className="editor">
@@ -94,7 +106,7 @@ export function App() {
           <button className="reconstruct-btn"><Sparkles size={16}/> Run reconstruction audit</button>
         </aside>
       </main>
-      <footer className="statusbar"><span><b>RECONSTRUCTA</b> · Local-first workspace</span><span>Scene graph 4 layers · {selectedLayer?.name || 'No selection'} · v0.1 demo</span></footer>
+      <footer className="statusbar"><span><b>RECONSTRUCTA</b> · Local-first workspace</span><span>Scene graph 4 layers · {selectedLayer?.name || 'No selection'} · Demo</span></footer>
     </div>
   )
 }
