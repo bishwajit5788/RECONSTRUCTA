@@ -1,12 +1,12 @@
 """RECONSTRUCTA authorization primitives.
 
-Authorization is intentionally separated from authentication.  The current API
-uses an authenticated-principal adapter (X-Session-ID) so route enforcement can
-be tested now; the authentication layer can later replace that adapter without
-changing ownership checks.
+Authorization is deliberately separated from authentication. The current
+principal adapter uses X-Session-ID so ownership enforcement can be tested now;
+the authentication layer can replace that adapter later without changing the
+project/asset authorization contract.
 """
 from fastapi import HTTPException, Request
-
+from database import db_manager
 
 HEADER_NAME = "X-Session-ID"
 
@@ -20,19 +20,15 @@ def principal_from_request(request: Request) -> str:
 
 async def require_project_owner(request: Request, project_id: str) -> str:
     principal = principal_from_request(request)
-    projects = request.app.state.db_manager.get_collection("projects")
-    project = await projects.find_one({"project_id": project_id})
+    project = await db_manager.get_collection("projects").find_one({"project_id": project_id})
     if not project or project.get("owner_session") != principal:
-        # Deliberately use 403 for both missing and foreign resources to reduce
-        # project enumeration through ownership-protected routes.
         raise HTTPException(status_code=403, detail="Project access denied")
     return principal
 
 
 async def require_asset_owner(request: Request, object_id: str) -> str:
     principal = principal_from_request(request)
-    assets = request.app.state.db_manager.get_collection("assets")
-    asset = await assets.find_one({"object_id": object_id})
+    asset = await db_manager.get_collection("assets").find_one({"object_id": object_id})
     if not asset:
         raise HTTPException(status_code=403, detail="Asset access denied")
     return await require_project_owner(request, asset.get("project_id", ""))
