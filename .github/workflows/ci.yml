@@ -2,7 +2,7 @@ name: RECONSTRUCTA CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, authorization-hardening-2026-09, auth-impl-2026-09 ]
   pull_request:
     branches: [ main, master ]
 
@@ -13,22 +13,17 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
-
       - name: Install Dependencies
         run: npm ci
-
       - name: Lint Verification
         run: npm run lint
-
       - name: Vitest Unit & Integration Tests
         run: npm run test
-
       - name: Production TypeScript Build
         run: npm run build
 
@@ -41,17 +36,24 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
-
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Pytest Inpainting, R2, MongoDB & Retention Tests
+      - name: Backend Regression Suite
+        env:
+          LOCAL_DEV_STORAGE: "true"
         run: pytest test_backend.py -v
+      - name: Real Authentication Suite
+        env:
+          LOCAL_DEV_STORAGE: "true"
+        run: pytest test_auth.py -v
+      - name: Authorization Isolation Suite
+        env:
+          LOCAL_DEV_STORAGE: "true"
+        run: pytest test_authz.py -v
