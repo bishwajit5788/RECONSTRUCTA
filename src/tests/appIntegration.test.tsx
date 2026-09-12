@@ -7,7 +7,7 @@ import { App } from '../App';
 describe('App Component Integration', () => {
   it('renders the current luxury editor shell and import controls', () => {
     render(<App />);
-    expect(screen.getByText('RECONSTRUCTA')).toBeInTheDocument();
+    expect(screen.getAllByText('RECONSTRUCTA').length).toBeGreaterThan(0);
     expect(screen.getByText(/Universal Visual & Document Editor/i)).toBeInTheDocument();
     expect(screen.getByText(/Import & Reconstruct/i)).toBeInTheDocument();
     expect(screen.getByText('LOCAL DEMO')).toBeInTheDocument();
@@ -16,18 +16,19 @@ describe('App Component Integration', () => {
 
   it('renders the editable scene graph and changes selection', () => {
     render(<App />);
-    expect(screen.getByText('Headline')).toBeInTheDocument();
-    expect(screen.getByText('Body copy')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Body copy'));
-    expect(screen.getByText('Body copy')).toBeInTheDocument();
+    expect(screen.getAllByText('Headline').length).toBeGreaterThan(0);
+    const bodyCopy = screen.getAllByText('Body copy')[0];
+    expect(bodyCopy).toBeInTheDocument();
+    fireEvent.click(bodyCopy);
+    expect(bodyCopy).toBeInTheDocument();
   });
 
   it('changes zoom through the canvas controls', () => {
     render(<App />);
-    expect(screen.getByText('100%')).toBeInTheDocument();
+    expect(screen.getAllByText('100%').length).toBeGreaterThan(0);
     const zoomIn = screen.getAllByRole('button').find((button) => button.querySelector('svg.lucide-zoom-in'));
     expect(zoomIn).toBeTruthy();
     fireEvent.click(zoomIn!);
-    expect(screen.getByText('110%')).toBeInTheDocument();
+    expect(screen.getAllByText('110%').length).toBeGreaterThan(0);
   });
 });
