@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from PIL import Image
 
-from authz import ensure_owner_not_forged, require_asset_owner, require_project_owner
+from auth import authenticate_user, create_session, create_user, revoke_session
+from authz import ensure_owner_not_forged, principal_from_request, require_asset_owner, require_project_owner
 from database import db_manager, ProjectMetadataModel, AssetMetadataModel
 from storage import (
     storage_manager,
@@ -43,19 +44,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="RECONSTRUCTA Production Backend Service",
-    description="Secure visual reconstruction backend with ownership enforcement.",
-    version="2.1.0",
+    description="Secure visual reconstruction backend with real credential authentication and ownership enforcement.",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
 cors_origins_env = os.environ.get("CORS_ORIGINS", "*")
-allowed_origins = [x.strip() for x in cors_origins_env.split(",")] if cors_origins_env != "*" else ["*"]
+allowed_origins = [x.strip() for x in cors_origins_env.split(",") if x.strip()] if cors_origins_env != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Session-ID", "X-Request-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 _rate_limits: Dict[str, List[float]] = defaultdict(list)
@@ -71,12 +72,7 @@ async def observability_and_rate_limit_middleware(request: Request, call_next):
     now = time.time()
     timestamps = [t for t in _rate_limits[client_ip] if now - t < RATE_LIMIT_WINDOW]
     if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
-        return Response(
-            content='{"detail":"Rate limit exceeded. Try again later."}',
-            status_code=429,
-            media_type="application/json",
-            headers={"X-Request-ID": req_id},
-        )
+        return Response(content='{"detail":"Rate limit exceeded. Try again later."}', status_code=429, media_type="application/json", headers={"X-Request-ID": req_id})
     timestamps.append(now)
     _rate_limits[client_ip] = timestamps
     response = await call_next(request)
@@ -122,6 +118,19 @@ class ProjectCreateRequest(BaseModel):
     node_count: int = Field(default=0, ge=0)
 
 
+class CredentialRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: float
+    user_id: str
+    username: str
+
+
 def calculate_inpaint_quality(original_bgr: np.ndarray, restored_bgr: np.ndarray, mask: np.ndarray, bounds: BoundingBoxModel):
     warnings: List[str] = []
     h, w, _ = original_bgr.shape
@@ -163,6 +172,36 @@ async def readiness_check():
     return {"status": "ready", "database_healthy": True, "storage_healthy": True, "local_dev_mode": LOCAL_DEV_STORAGE, "timestamp": time.time()}
 
 
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(request: CredentialRequest):
+    user_id = await create_user(request.username, request.password)
+    user = {"user_id": user_id, "username": request.username.strip().lower()}
+    token, expires_at = await create_session(user)
+    return AuthResponse(access_token=token, expires_at=expires_at, user_id=user_id, username=user["username"])
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(request: CredentialRequest):
+    user = await authenticate_user(request.username, request.password)
+    token, expires_at = await create_session(user)
+    return AuthResponse(access_token=token, expires_at=expires_at, user_id=user["user_id"], username=user["username"])
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    await revoke_session(request)
+    return {"status": "success"}
+
+
+@app.get("/api/auth/me")
+async def current_user(request: Request):
+    principal = await principal_from_request(request)
+    user = await db_manager.get_collection("users").find_one({"user_id": principal})
+    if not user:
+        raise HTTPException(status_code=401, detail="Authenticated user no longer exists")
+    return {"user_id": user["user_id"], "username": user["username"]}
+
+
 @app.post("/api/inpaint", response_model=InpaintResponse)
 async def inpaint_region(req: InpaintRequest):
     start_time = time.time()
@@ -198,7 +237,8 @@ async def inpaint_region(req: InpaintRequest):
 
 @app.post("/api/projects")
 async def save_project_metadata(req: ProjectCreateRequest, request: Request):
-    principal = ensure_owner_not_forged(request, req.owner_session)
+    principal = await principal_from_request(request)
+    ensure_owner_not_forged(request, req.owner_session, principal)
     projects = db_manager.get_collection("projects")
     existing = await projects.find_one({"project_id": req.project_id})
     now = time.time()
@@ -214,8 +254,7 @@ async def save_project_metadata(req: ProjectCreateRequest, request: Request):
 @app.get("/api/projects/{project_id}")
 async def get_project_metadata(project_id: str, request: Request):
     await require_project_owner(request, project_id)
-    project = await db_manager.get_collection("projects").find_one({"project_id": project_id})
-    return project
+    return await db_manager.get_collection("projects").find_one({"project_id": project_id})
 
 
 @app.post("/api/projects/{project_id}/touch")
@@ -284,8 +323,8 @@ async def delete_temporary_file(object_id: str, request: Request):
 @app.post("/api/cleanup/purge-expired")
 async def manual_retention_purge(request: Request):
     admin = os.environ.get("RECONSTRUCTA_ADMIN_SESSION", "").strip()
-    principal = request.headers.get("X-Session-ID", "").strip()
-    if not admin or not principal or principal != admin:
+    principal = await principal_from_request(request)
+    if not admin or principal != admin:
         raise HTTPException(status_code=403, detail="Administrative access required")
     return {"status":"success","purged":await retention_worker.purge_all_expired()}
 
