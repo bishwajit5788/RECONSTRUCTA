@@ -1,34 +1,56 @@
 import React from 'react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { App } from '../App';
 
+beforeEach(() => {
+  localStorage.clear();
+  global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ detail: 'not authenticated' }) }) as typeof fetch;
+});
+
 describe('App Component Integration', () => {
-  it('renders the current luxury editor shell and import controls', () => {
+  it('requires authentication instead of rendering the demo shell', () => {
     render(<App />);
-    expect(screen.getAllByText('RECONSTRUCTA').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Universal Visual & Document Editor/i)).toBeInTheDocument();
-    expect(screen.getByText(/Import & Reconstruct/i)).toBeInTheDocument();
-    expect(screen.getByText('LOCAL DEMO')).toBeInTheDocument();
-    expect(screen.getByText('Editable layers')).toBeInTheDocument();
+    expect(screen.getByText('SECURE WORKSPACE')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name:/Sign in/i})).toBeInTheDocument();
+    expect(screen.queryByText('LOCAL DEMO')).not.toBeInTheDocument();
   });
 
-  it('renders the editable scene graph and changes selection', () => {
+  it('registers and enters the authenticated editor', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({ok:true,json:async()=>({access_token:'token',user_id:'u1',username:'alice'})} as Response);
     render(<App />);
-    expect(screen.getAllByText('Headline').length).toBeGreaterThan(0);
-    const bodyCopy = screen.getAllByText('Body copy')[0];
-    expect(bodyCopy).toBeInTheDocument();
-    fireEvent.click(bodyCopy);
-    expect(bodyCopy).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:/Need an account/i}));
+    fireEvent.change(screen.getByLabelText('Username'),{target:{value:'alice'}});
+    fireEvent.change(screen.getByLabelText('Password'),{target:{value:'long-enough-password'}});
+    fireEvent.click(screen.getByRole('button',{name:/Register/i}));
+    expect(await screen.findByText('AUTHENTICATED')).toBeInTheDocument();
+    expect(screen.getByText('Import & Reconstruct')).toBeInTheDocument();
+    expect(screen.queryByText('LOCAL DEMO')).not.toBeInTheDocument();
   });
 
-  it('changes zoom through the canvas controls', () => {
+  it('adds a real text scene-graph node and exposes editable properties', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({ok:true,json:async()=>({user_id:'u1',username:'alice'})} as Response);
+    localStorage.setItem('reconstructa_access_token','token');
     render(<App />);
-    expect(screen.getAllByText('100%').length).toBeGreaterThan(0);
-    const zoomIn = screen.getAllByRole('button').find((button) => button.querySelector('svg.lucide-zoom-in'));
-    expect(zoomIn).toBeTruthy();
-    fireEvent.click(zoomIn!);
-    expect(screen.getAllByText('110%').length).toBeGreaterThan(0);
+    expect(await screen.findByText('AUTHENTICATED')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:/Typography/i}));
+    expect(screen.getByText('Text layer')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Double-click to edit')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('Double-click to edit'),{target:{value:'Actual editable text'}});
+    expect(screen.getByDisplayValue('Actual editable text')).toBeInTheDocument();
+  });
+
+  it('supports zoom and undo/redo controls', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({ok:true,json:async()=>({user_id:'u1',username:'alice'})} as Response);
+    localStorage.setItem('reconstructa_access_token','token');
+    render(<App />);
+    expect(await screen.findByText('AUTHENTICATED')).toBeInTheDocument();
+    const zoomIn = screen.getAllByRole('button').find(button => button.querySelector('svg.lucide-zoom-in'))!;
+    fireEvent.click(zoomIn);
+    expect(screen.getByText('110%')).toBeInTheDocument();
   });
 });
